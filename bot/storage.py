@@ -38,6 +38,7 @@ class Storage:
                     tag TEXT NOT NULL,
                     developer TEXT NOT NULL,
                     status TEXT NOT NULL,
+                    payload TEXT NOT NULL DEFAULT '{}',
                     updated_at TEXT NOT NULL
                 );
 
@@ -49,6 +50,17 @@ class Storage:
                     error TEXT
                 );
                 """
+            )
+            self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(row_snapshots)").fetchall()
+        }
+        if "payload" not in columns:
+            conn.execute(
+                "ALTER TABLE row_snapshots ADD COLUMN payload TEXT NOT NULL DEFAULT '{}'"
             )
 
     def add_subscriber(self, chat_id: int) -> bool:
@@ -96,7 +108,7 @@ class Storage:
             cur = conn.execute("SELECT COUNT(*) AS c FROM row_snapshots")
             return int(cur.fetchone()["c"])
 
-    def get_snapshot(self, row_number: int) -> str | None:
+    def get_snapshot_hash(self, row_number: int) -> str | None:
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT content_hash FROM row_snapshots WHERE row_number = ?",
@@ -105,18 +117,30 @@ class Storage:
             row = cur.fetchone()
             return row["content_hash"] if row else None
 
+    def get_snapshot_row(self, row_number: int) -> ImageRow | None:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT payload FROM row_snapshots WHERE row_number = ?",
+                (row_number,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return ImageRow.from_payload(row["payload"])
+
     def upsert_snapshot(self, image_row: ImageRow, content_hash: str) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO row_snapshots
-                    (row_number, content_hash, tag, developer, status, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (row_number, content_hash, tag, developer, status, payload, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(row_number) DO UPDATE SET
                     content_hash = excluded.content_hash,
                     tag = excluded.tag,
                     developer = excluded.developer,
                     status = excluded.status,
+                    payload = excluded.payload,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -125,6 +149,7 @@ class Storage:
                     image_row.tag,
                     image_row.developer,
                     image_row.status,
+                    image_row.to_payload(),
                     _now_iso(),
                 ),
             )

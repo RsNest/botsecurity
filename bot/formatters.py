@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from bot.config import FIELD_NAMES, settings
-from bot.models import ImageRow, RowChange
+from bot.models import ImageRow, RowChange, normalize_status
 
 SHEET_URL = (
     f"https://docs.google.com/spreadsheets/d/{settings.spreadsheet_id}/"
@@ -63,18 +63,36 @@ def format_change(change: RowChange) -> str:
     row = change.row
     if change.change_type == "new":
         header = "🆕 <b>Новый образ в реестре</b>"
+    elif _is_failed_status_change(change):
+        header = "❌ <b>Образ не прошёл проверку ИБ</b>"
+    elif _is_on_review_status_change(change):
+        header = "🔍 <b>Образ передан на проверку ИБ</b>"
     else:
         header = "✏️ <b>Изменение в реестре</b>"
 
     body = format_row_detail(row)
     if change.change_type == "updated" and change.changed_fields:
         fields = []
-        for key, (_, new_val) in change.changed_fields.items():
+        for key, (old_val, new_val) in change.changed_fields.items():
             label = FIELD_NAMES.get(key, key)
-            fields.append(f"{label}: {new_val}")
+            fields.append(f"{label}: {old_val} → {new_val}")
         if fields:
-            body += "\n\nОбновлено:\n" + "\n".join(f"• {line}" for line in fields)
+            body += "\n\nИзменения:\n" + "\n".join(f"• {line}" for line in fields)
     return f"{header}\n\n{body}\n\n<a href=\"{SHEET_URL}\">Открыть таблицу</a>"
+
+
+def _is_failed_status_change(change: RowChange) -> bool:
+    status = change.changed_fields.get("status")
+    if not status:
+        return False
+    return normalize_status(status[1]) == "не прошло проверку"
+
+
+def _is_on_review_status_change(change: RowChange) -> bool:
+    status = change.changed_fields.get("status")
+    if not status:
+        return False
+    return normalize_status(status[1]) == "на проверке"
 
 
 def format_pending_list(rows: list[ImageRow], title: str) -> str:
@@ -114,6 +132,8 @@ def format_help(is_subscribed: bool) -> str:
         "Публичный бот для мониторинга Google-таблицы с образами.\n\n"
         "<b>Команды:</b>\n"
         "/pending — образы без статуса / не переданы\n"
+        "/on_review — образы на проверке у ИБ\n"
+        "/failed — не прошли проверку ИБ\n"
         "/status — сводка по статусам\n"
         "/today — добавленные сегодня\n"
         "/by_dev фамилия — образы разработчика\n"

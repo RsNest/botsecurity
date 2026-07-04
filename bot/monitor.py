@@ -53,37 +53,48 @@ class RegistryMonitor:
     def _detect_changes(self, rows: list[ImageRow]) -> list[RowChange]:
         changes: list[RowChange] = []
         for row in rows:
-            old_hash = self.storage.get_snapshot(row.row_number)
+            old_hash = self.storage.get_snapshot_hash(row.row_number)
             new_hash = row.content_hash()
             if old_hash is None:
                 changes.append(RowChange(row=row, change_type="new", changed_fields={}))
                 continue
             if old_hash != new_hash:
+                old_row = self.storage.get_snapshot_row(row.row_number)
                 changes.append(
                     RowChange(
                         row=row,
                         change_type="updated",
-                        changed_fields=self._diff_fields(old_hash, row),
+                        changed_fields=self._diff_fields(old_row, row),
                     )
                 )
         return changes
 
-    def _diff_fields(self, _old_hash: str, row: ImageRow) -> dict[str, tuple[str, str]]:
-        # Without storing full previous payload we report current notable fields.
-        return {
-            key: ("", current)
-            for key, current in {
-                "status": row.status or "—",
-                "tag": row.tag,
-                "release": row.release,
-                "corrected_tag": row.corrected_tag,
-            }.items()
-            if current
-        }
+    def _diff_fields(
+        self,
+        old_row: ImageRow | None,
+        new_row: ImageRow,
+    ) -> dict[str, tuple[str, str]]:
+        if old_row is None:
+            return {}
+        changes: dict[str, tuple[str, str]] = {}
+        for field in FIELD_NAMES:
+            old_val = getattr(old_row, field) or ""
+            new_val = getattr(new_row, field) or ""
+            if old_val != new_val:
+                changes[field] = (old_val or "—", new_val or "—")
+        return changes
 
     def pending_rows(self, rows: list[ImageRow] | None = None) -> list[ImageRow]:
         source = rows if rows is not None else self._last_rows
         return [row for row in source if row.is_pending_ops()]
+
+    def rows_on_review(self, rows: list[ImageRow] | None = None) -> list[ImageRow]:
+        source = rows if rows is not None else self._last_rows
+        return [row for row in source if row.is_on_review()]
+
+    def rows_failed(self, rows: list[ImageRow] | None = None) -> list[ImageRow]:
+        source = rows if rows is not None else self._last_rows
+        return [row for row in source if row.is_failed()]
 
     def rows_for_today(self, rows: list[ImageRow] | None = None) -> list[ImageRow]:
         source = rows if rows is not None else self._last_rows

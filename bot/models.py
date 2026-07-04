@@ -67,6 +67,22 @@ class ImageRow:
     def is_on_review(self) -> bool:
         return self.status_normalized() == "на проверке"
 
+    def is_failed(self) -> bool:
+        return self.status_normalized() == "не прошло проверку"
+
+    def to_payload(self) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False)
+
+    @classmethod
+    def from_payload(cls, raw: str) -> ImageRow | None:
+        if not raw or raw == "{}":
+            return None
+        try:
+            data = json.loads(raw)
+            return cls(**data)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
     def is_terminal(self) -> bool:
         return self.status_normalized() in {
             "прошло проверку",

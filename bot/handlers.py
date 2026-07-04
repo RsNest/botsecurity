@@ -41,12 +41,17 @@ def _rate_limited(user_id: int) -> bool:
     return False
 
 
-async def _ensure_data(message: Message, monitor: RegistryMonitor) -> bool:
-    if monitor.last_rows:
-        return True
-    wait = await message.answer("⏳ Загружаю данные из таблицы…")
+async def _refresh_data(
+    message: Message,
+    monitor: RegistryMonitor,
+    bot: Bot,
+    storage: Storage,
+) -> bool:
+    wait = await message.answer("⏳ Загружаю актуальные данные…")
     try:
-        await monitor.scan()
+        result = await monitor.scan()
+        if result.changes:
+            await broadcast_changes(bot, storage, result.changes)
         await wait.delete()
         return True
     except Exception as exc:
@@ -55,6 +60,24 @@ async def _ensure_data(message: Message, monitor: RegistryMonitor) -> bool:
             parse_mode=ParseMode.HTML,
         )
         return False
+
+
+async def _run_query_command(
+    message: Message,
+    monitor: RegistryMonitor,
+    bot: Bot,
+    storage: Storage,
+    title: str,
+    rows_fn,
+) -> None:
+    if message.from_user and _rate_limited(message.from_user.id):
+        await message.answer("⏳ Подождите немного перед повторным запросом.")
+        return
+    if not await _refresh_data(message, monitor, bot, storage):
+        return
+    rows = rows_fn()
+    text = format_pending_list(rows, title)
+    await message.answer(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
 def setup_handlers(
@@ -93,21 +116,43 @@ def setup_handlers(
 
     @dp.message(Command("pending"))
     async def cmd_pending(message: Message) -> None:
-        if message.from_user and _rate_limited(message.from_user.id):
-            await message.answer("⏳ Подождите немного перед повторным запросом.")
-            return
-        if not await _ensure_data(message, monitor):
-            return
-        rows = monitor.pending_rows()
-        text = format_pending_list(rows, "Образы, ожидающие передачи на проверку")
-        await message.answer(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        await _run_query_command(
+            message,
+            monitor,
+            bot,
+            storage,
+            "Образы, ожидающие передачи на проверку",
+            monitor.pending_rows,
+        )
+
+    @dp.message(Command("on_review"))
+    async def cmd_on_review(message: Message) -> None:
+        await _run_query_command(
+            message,
+            monitor,
+            bot,
+            storage,
+            "Образы на проверке у ИБ",
+            monitor.rows_on_review,
+        )
+
+    @dp.message(Command("failed"))
+    async def cmd_failed(message: Message) -> None:
+        await _run_query_command(
+            message,
+            monitor,
+            bot,
+            storage,
+            "Образы, не прошедшие проверку ИБ",
+            monitor.rows_failed,
+        )
 
     @dp.message(Command("status"))
     async def cmd_status(message: Message) -> None:
         if message.from_user and _rate_limited(message.from_user.id):
             await message.answer("⏳ Подождите немного перед повторным запросом.")
             return
-        if not await _ensure_data(message, monitor):
+        if not await _refresh_data(message, monitor, bot, storage):
             return
         rows = monitor.last_rows
         summary = monitor.status_summary(rows)
@@ -116,14 +161,14 @@ def setup_handlers(
 
     @dp.message(Command("today"))
     async def cmd_today(message: Message) -> None:
-        if message.from_user and _rate_limited(message.from_user.id):
-            await message.answer("⏳ Подождите немного перед повторным запросом.")
-            return
-        if not await _ensure_data(message, monitor):
-            return
-        rows = monitor.rows_for_today()
-        text = format_pending_list(rows, "Образы, добавленные сегодня")
-        await message.answer(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        await _run_query_command(
+            message,
+            monitor,
+            bot,
+            storage,
+            "Образы, добавленные сегодня",
+            monitor.rows_for_today,
+        )
 
     @dp.message(Command("by_dev"))
     async def cmd_by_dev(message: Message, command: CommandObject) -> None:
@@ -134,7 +179,7 @@ def setup_handlers(
         if not query:
             await message.answer("Использование: /by_dev Зуев")
             return
-        if not await _ensure_data(message, monitor):
+        if not await _refresh_data(message, monitor, bot, storage):
             return
         rows = monitor.rows_by_developer(query)
         text = format_pending_list(rows, f"Образы разработчика «{query}»")
@@ -151,7 +196,7 @@ def setup_handlers(
         except ValueError:
             await message.answer("Использование: /stale 3")
             return
-        if not await _ensure_data(message, monitor):
+        if not await _refresh_data(message, monitor, bot, storage):
             return
         rows = monitor.stale_rows(days)
         text = format_pending_list(rows, f"Образы без статуса ≥ {days} дн.")
@@ -228,12 +273,11 @@ async def broadcast_reminder(bot: Bot, storage: Storage, monitor: RegistryMonito
     subscribers = storage.list_subscribers()
     if not subscribers:
         return
-    if not monitor.last_rows:
-        try:
-            await monitor.scan()
-        except Exception:
-            logger.exception("Reminder scan failed")
-            return
+    try:
+        await monitor.scan()
+    except Exception:
+        logger.exception("Reminder scan failed")
+        return
     pending = monitor.pending_rows()
     if not pending:
         return

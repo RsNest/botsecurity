@@ -68,5 +68,5 @@ def format_period_label(start: date, end: date) -> str:
     return f"{start.strftime('%d.%m.%Y')} — {end.strftime('%d.%m.%Y')}"
 
 
-FIELD_LABELS = {"tr": "дата передачи", "ch": "дата проверки ИБ"}
+FIELD_LABELS = {"tr": "дата передачи", "ch": "дата проверки / релиза"}
 STATUS_LABELS = {"ok": "прошли проверку", "fail": "не прошли", "all": "все"}

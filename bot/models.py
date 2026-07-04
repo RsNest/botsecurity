@@ -80,7 +80,7 @@ class ImageRow:
 
     def date_for_field(self, field: str) -> date | None:
         if field == "ch":
-            return self.parse_check_date()
+            return self.parse_check_date() or parse_flexible_date(self.actual_release_date)
         return self.parse_transfer_date()
 
     def to_payload(self) -> str:

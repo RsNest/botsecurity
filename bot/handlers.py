@@ -3,18 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Callable
-from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandObject
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from bot.config import settings
 from bot.dates import (
@@ -27,8 +26,7 @@ from bot.dates import (
 from bot.formatters import (
     format_change,
     format_help,
-    format_pending_list,
-    format_reminder,
+    format_rows_page,
     format_status_summary,
     format_welcome,
 )
@@ -48,25 +46,30 @@ from bot.keyboards import (
     inline_date_period_keyboard,
     inline_date_status_keyboard,
     inline_main_menu,
+    inline_paginated_menu,
     main_reply_keyboard,
 )
 from bot.models import ImageRow
 from bot.monitor import RegistryMonitor
+from bot.scheduler import broadcast_changes
 from bot.storage import Storage
+from bot.utils import safe_edit, safe_send
 
 logger = logging.getLogger(__name__)
 
 _last_force_refresh: dict[int, datetime] = defaultdict(lambda: datetime.min)
-
-
-@dataclass
-class DateInputState:
-    date_field: str
-    start: date
-    end: date
-
-
 _awaiting_custom_date: dict[int, str] = {}  # user_id -> date_field
+# Per-chat dynamic result cache for paginating ad-hoc queries (find/by_dev/stale)
+_dynamic_results: dict[int, tuple[str, list[ImageRow]]] = {}
+
+# token -> (title, monitor method name)
+VIEWS: dict[str, tuple[str, str]] = {
+    "pending": ("Образы, ожидающие передачи на проверку", "pending_rows"),
+    "on_review": ("Образы на проверке у ИБ", "rows_on_review"),
+    "passed": ("Образы, прошедшие проверку ИБ", "rows_passed"),
+    "failed": ("Образы, не прошедшие проверку ИБ", "rows_failed"),
+    "today": ("Образы, добавленные сегодня", "rows_for_today"),
+}
 
 
 def _cache_footer(monitor: RegistryMonitor) -> str:
@@ -116,154 +119,122 @@ async def _load_data(
         return False, str(exc)
 
 
-async def _send_rows(
+async def _apply_force(message: Message) -> bool:
+    """Return True if a forced refresh is allowed (and mark it)."""
+    if not message.from_user:
+        return True
+    remaining = _force_refresh_blocked(message.from_user.id)
+    if remaining > 0:
+        await message.answer(
+            f"🔄 Обновление доступно через {remaining} сек.\n"
+            "Пока показываю данные из кэша."
+        )
+        return False
+    _mark_force_refresh(message.from_user.id)
+    return True
+
+
+# --- Rendering ---------------------------------------------------------------
+
+async def _render_view(
     target: Message,
     monitor: RegistryMonitor,
-    title: str,
-    rows: list[ImageRow],
+    token: str,
+    page: int,
     *,
-    edit: bool = False,
+    edit: bool,
 ) -> None:
-    text = format_pending_list(rows, title, footer=_cache_footer(monitor))
-    markup = inline_back_menu()
+    title, method = VIEWS[token]
+    rows = getattr(monitor, method)()
+    text, page, pages = format_rows_page(rows, title, page, footer=_cache_footer(monitor))
+    kb = inline_paginated_menu(f"pg:{token}", page, pages)
     if edit:
-        await target.edit_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-            reply_markup=markup,
-        )
+        await safe_edit(target, text, reply_markup=kb)
     else:
         await target.answer(
-            text,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-            reply_markup=markup,
+            text, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=kb
         )
 
 
-async def _query_rows(
-    message: Message,
+async def _render_dynamic(
+    target: Message,
     monitor: RegistryMonitor,
-    bot: Bot,
-    storage: Storage,
+    chat_id: int,
     title: str,
-    rows_fn: Callable[[], list[ImageRow]],
+    rows: list[ImageRow],
+    page: int,
     *,
-    force: bool = False,
+    edit: bool,
 ) -> None:
-    if force and message.from_user:
-        remaining = _force_refresh_blocked(message.from_user.id)
-        if remaining > 0:
-            await message.answer(
-                f"🔄 Обновление доступно через {remaining} сек.\n"
-                "Пока показываю данные из кэша."
-            )
-            force = False
-        else:
-            _mark_force_refresh(message.from_user.id)
-
-    wait = None
-    if force:
-        wait = await message.answer("⏳ Обновляю данные…")
-    elif not monitor.last_rows:
-        wait = await message.answer("⏳ Загружаю данные…")
-
-    ok, err = await _load_data(
-        monitor, bot, storage, force=force, notify_changes=force
-    )
-    if wait:
-        await wait.delete()
-
-    if not ok:
-        await message.answer(f"❌ Не удалось загрузить таблицу:\n<code>{err}</code>")
-        return
-
-    await _send_rows(message, monitor, title, rows_fn())
+    _dynamic_results[chat_id] = (title, rows)
+    text, page, pages = format_rows_page(rows, title, page, footer=_cache_footer(monitor))
+    kb = inline_paginated_menu("pgm", page, pages)
+    if edit:
+        await safe_edit(target, text, reply_markup=kb)
+    else:
+        await target.answer(
+            text, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=kb
+        )
 
 
-async def _query_status(
-    message: Message,
+async def _render_date(
+    target: Message,
     monitor: RegistryMonitor,
-    bot: Bot,
-    storage: Storage,
-    *,
-    force: bool = False,
-) -> None:
-    if force and message.from_user:
-        remaining = _force_refresh_blocked(message.from_user.id)
-        if remaining > 0:
-            await message.answer(
-                f"🔄 Обновление доступно через {remaining} сек.\n"
-                "Пока показываю данные из кэша."
-            )
-            force = False
-        else:
-            _mark_force_refresh(message.from_user.id)
-
-    wait = None
-    if force:
-        wait = await message.answer("⏳ Обновляю данные…")
-    elif not monitor.last_rows:
-        wait = await message.answer("⏳ Загружаю данные…")
-
-    ok, err = await _load_data(
-        monitor, bot, storage, force=force, notify_changes=force
-    )
-    if wait:
-        await wait.delete()
-
-    if not ok:
-        await message.answer(f"❌ Не удалось загрузить таблицу:\n<code>{err}</code>")
-        return
-
-    rows = monitor.last_rows
-    summary = monitor.status_summary(rows)
-    text = format_status_summary(summary, len(rows), footer=_cache_footer(monitor))
-    await message.answer(
-        text,
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-        reply_markup=inline_back_menu(),
-    )
-
-
-def _date_report_title(
     date_field: str,
     start: date,
     end: date,
     status_filter: str,
-) -> str:
+    page: int,
+    *,
+    edit: bool,
+) -> None:
+    rows = monitor.rows_by_date_range(start, end, date_field, status_filter)
     period = format_period_label(start, end)
     field = FIELD_LABELS.get(date_field, date_field)
     status = STATUS_LABELS.get(status_filter, status_filter)
-    return f"Выборка: {status} · {field} · {period}"
+    title = f"Выборка: {status} · {field} · {period}"
+    text, page, pages = format_rows_page(rows, title, page, footer=_cache_footer(monitor))
+    token = f"{start.isoformat()}_{end.isoformat()}"
+    prefix = f"pgd:{date_field}:{token}:{status_filter}"
+    kb = inline_paginated_menu(prefix, page, pages)
+    if edit:
+        await safe_edit(target, text, reply_markup=kb)
+    else:
+        await target.answer(
+            text, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=kb
+        )
 
 
-async def _show_date_report(
-    target: Message,
+async def _serve_view(
+    message: Message,
     monitor: RegistryMonitor,
     bot: Bot,
     storage: Storage,
-    date_field: str,
-    start: date,
-    end: date,
-    status_filter: str,
+    token: str,
     *,
-    edit: bool = False,
+    force: bool = False,
 ) -> None:
-    ok, err = await _load_data(monitor, bot, storage)
+    if force and not await _apply_force(message):
+        force = False
+
+    wait = None
+    if force:
+        wait = await message.answer("⏳ Обновляю данные…")
+    elif not monitor.last_rows:
+        wait = await message.answer("⏳ Загружаю данные…")
+
+    ok, err = await _load_data(monitor, bot, storage, force=force, notify_changes=force)
+    if wait:
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+
     if not ok:
-        text = f"❌ Не удалось загрузить таблицу:\n<code>{err}</code>"
-        if edit:
-            await target.edit_text(text, parse_mode=ParseMode.HTML)
-        else:
-            await target.answer(text, parse_mode=ParseMode.HTML)
+        await message.answer(f"❌ Не удалось загрузить таблицу:\n<code>{err}</code>")
         return
 
-    rows = monitor.rows_by_date_range(start, end, date_field, status_filter)
-    title = _date_report_title(date_field, start, end, status_filter)
-    await _send_rows(target, monitor, title, rows, edit=edit)
+    await _render_view(message, monitor, token, 0, edit=False)
 
 
 def setup_handlers(
@@ -317,46 +288,64 @@ def setup_handlers(
 
     @dp.message(Command("pending"))
     async def cmd_pending(message: Message) -> None:
-        await _query_rows(
-            message, monitor, bot, storage,
-            "Образы, ожидающие передачи на проверку",
-            monitor.pending_rows,
-        )
+        await _serve_view(message, monitor, bot, storage, "pending")
 
     @dp.message(Command("on_review"))
     async def cmd_on_review(message: Message) -> None:
-        await _query_rows(
-            message, monitor, bot, storage,
-            "Образы на проверке у ИБ",
-            monitor.rows_on_review,
-        )
+        await _serve_view(message, monitor, bot, storage, "on_review")
 
     @dp.message(Command("passed"))
     async def cmd_passed(message: Message) -> None:
-        await _query_rows(
-            message, monitor, bot, storage,
-            "Образы, прошедшие проверку ИБ",
-            monitor.rows_passed,
-        )
+        await _serve_view(message, monitor, bot, storage, "passed")
 
     @dp.message(Command("failed"))
     async def cmd_failed(message: Message) -> None:
-        await _query_rows(
-            message, monitor, bot, storage,
-            "Образы, не прошедшие проверку ИБ",
-            monitor.rows_failed,
-        )
-
-    @dp.message(Command("status"))
-    async def cmd_status(message: Message) -> None:
-        await _query_status(message, monitor, bot, storage)
+        await _serve_view(message, monitor, bot, storage, "failed")
 
     @dp.message(Command("today"))
     async def cmd_today(message: Message) -> None:
-        await _query_rows(
-            message, monitor, bot, storage,
-            "Образы, добавленные сегодня",
-            monitor.rows_for_today,
+        await _serve_view(message, monitor, bot, storage, "today")
+
+    @dp.message(Command("status"))
+    async def cmd_status(message: Message) -> None:
+        if not monitor.last_rows:
+            wait = await message.answer("⏳ Загружаю данные…")
+        else:
+            wait = None
+        ok, err = await _load_data(monitor, bot, storage)
+        if wait:
+            try:
+                await wait.delete()
+            except Exception:
+                pass
+        if not ok:
+            await message.answer(f"❌ {err}")
+            return
+        summary = monitor.status_summary(monitor.last_rows)
+        text = format_status_summary(
+            summary, len(monitor.last_rows), footer=_cache_footer(monitor)
+        )
+        await message.answer(
+            text,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+            reply_markup=inline_back_menu(),
+        )
+
+    @dp.message(Command("find"))
+    async def cmd_find(message: Message, command: CommandObject) -> None:
+        query = (command.args or "").strip()
+        if not query:
+            await message.answer("Использование: /find leadgen")
+            return
+        ok, err = await _load_data(monitor, bot, storage)
+        if not ok:
+            await message.answer(f"❌ {err}")
+            return
+        rows = monitor.find_rows(query)
+        await _render_dynamic(
+            message, monitor, message.chat.id,
+            f"Поиск: «{query}»", rows, 0, edit=False,
         )
 
     @dp.message(Command("by_dev"))
@@ -370,7 +359,10 @@ def setup_handlers(
             await message.answer(f"❌ {err}")
             return
         rows = monitor.rows_by_developer(query)
-        await _send_rows(message, monitor, f"Образы разработчика «{query}»", rows)
+        await _render_dynamic(
+            message, monitor, message.chat.id,
+            f"Образы разработчика «{query}»", rows, 0, edit=False,
+        )
 
     @dp.message(Command("stale"))
     async def cmd_stale(message: Message, command: CommandObject) -> None:
@@ -385,7 +377,10 @@ def setup_handlers(
             await message.answer(f"❌ {err}")
             return
         rows = monitor.stale_rows(days)
-        await _send_rows(message, monitor, f"Образы без статуса ≥ {days} дн.", rows)
+        await _render_dynamic(
+            message, monitor, message.chat.id,
+            f"Образы без статуса ≥ {days} дн.", rows, 0, edit=False,
+        )
 
     @dp.message(Command("sync"))
     async def cmd_sync(message: Message) -> None:
@@ -398,9 +393,7 @@ def setup_handlers(
             await wait.edit_text(f"❌ Ошибка: {err}")
             return
         await wait.edit_text(
-            f"✅ Синхронизация завершена.\n"
-            f"Строк: {len(monitor.last_rows)}\n"
-            f"Кэш обновлён.",
+            f"✅ Синхронизация завершена.\nСтрок: {len(monitor.last_rows)}\nКэш обновлён."
         )
 
     @dp.message(Command("stats"))
@@ -427,20 +420,107 @@ def setup_handlers(
                 lines.append(f"Ошибка: {last['error']}")
         await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
+    @dp.message(Command("broadcast"))
+    async def cmd_broadcast(message: Message, command: CommandObject) -> None:
+        if not message.from_user or not settings.is_admin(message.from_user.id):
+            await message.answer("⛔ Команда только для администратора.")
+            return
+        text = (command.args or "").strip()
+        if not text:
+            await message.answer("Использование: /broadcast текст сообщения")
+            return
+        subs = storage.list_subscribers()
+        sent = 0
+        for chat_id in subs:
+            if await safe_send(bot, chat_id, f"📢 <b>Объявление</b>\n\n{text}"):
+                sent += 1
+            await asyncio.sleep(0.05)
+        await message.answer(f"✅ Отправлено {sent}/{len(subs)} подписчикам.")
+
+    # --- Callbacks ---
+
+    @dp.callback_query(F.data == "noop")
+    async def cb_noop(callback: CallbackQuery) -> None:
+        await callback.answer()
+
     @dp.callback_query(F.data == "menu")
     async def cb_menu(callback: CallbackQuery) -> None:
         await callback.answer()
         if callback.message:
-            await callback.message.edit_text(
+            await safe_edit(
+                callback.message,
                 "🏠 <b>Главное меню</b>\n\nВыберите действие:",
-                parse_mode=ParseMode.HTML,
                 reply_markup=inline_main_menu(),
             )
+
+    @dp.callback_query(F.data.startswith("pg:"))
+    async def cb_page_view(callback: CallbackQuery) -> None:
+        # pg:<token>:<page>
+        parts = callback.data.split(":")
+        if len(parts) != 3 or parts[1] not in VIEWS:
+            await callback.answer("Ошибка")
+            return
+        token, page = parts[1], int(parts[2])
+        await callback.answer()
+        if not callback.message:
+            return
+        ok, _ = await _load_data(monitor, bot, storage)
+        if not ok:
+            return
+        await _render_view(callback.message, monitor, token, page, edit=True)
+
+    @dp.callback_query(F.data.startswith("pgm:"))
+    async def cb_page_dynamic(callback: CallbackQuery) -> None:
+        # pgm:<page>
+        parts = callback.data.split(":")
+        if len(parts) != 2:
+            await callback.answer("Ошибка")
+            return
+        page = int(parts[1])
+        await callback.answer()
+        if not callback.message:
+            return
+        cached = _dynamic_results.get(callback.message.chat.id)
+        if not cached:
+            await safe_edit(
+                callback.message,
+                "Результаты устарели, повторите запрос.",
+                reply_markup=inline_main_menu(),
+            )
+            return
+        title, rows = cached
+        await _render_dynamic(
+            callback.message, monitor, callback.message.chat.id, title, rows, page, edit=True
+        )
+
+    @dp.callback_query(F.data.startswith("pgd:"))
+    async def cb_page_date(callback: CallbackQuery) -> None:
+        # pgd:<field>:<start>_<end>:<status>:<page>
+        parts = callback.data.split(":")
+        if len(parts) != 5:
+            await callback.answer("Ошибка")
+            return
+        date_field, token, status_filter, page = parts[1], parts[2], parts[3], int(parts[4])
+        await callback.answer()
+        if not callback.message:
+            return
+        try:
+            start_raw, end_raw = token.split("_", 1)
+            start = date.fromisoformat(start_raw)
+            end = date.fromisoformat(end_raw)
+        except ValueError:
+            await callback.answer("Неверный период")
+            return
+        ok, _ = await _load_data(monitor, bot, storage)
+        if not ok:
+            return
+        await _render_date(
+            callback.message, monitor, date_field, start, end, status_filter, page, edit=True
+        )
 
     @dp.callback_query(F.data.startswith("act:"))
     async def cb_action(callback: CallbackQuery) -> None:
         action = callback.data.split(":", 1)[1]
-
         if not callback.message:
             await callback.answer()
             return
@@ -449,21 +529,19 @@ def setup_handlers(
             if callback.from_user:
                 remaining = _force_refresh_blocked(callback.from_user.id)
                 if remaining > 0:
-                    await callback.answer(
-                        f"Подождите {remaining} сек",
-                        show_alert=True,
-                    )
+                    await callback.answer(f"Подождите {remaining} сек", show_alert=True)
                     return
                 _mark_force_refresh(callback.from_user.id)
             await callback.answer("Обновляю…")
-            await callback.message.edit_text("⏳ Обновляю данные…")
+            await safe_edit(callback.message, "⏳ Обновляю данные…")
             ok, err = await _load_data(
                 monitor, bot, storage, force=True, notify_changes=True
             )
             if not ok:
-                await callback.message.edit_text(f"❌ {err}")
+                await safe_edit(callback.message, f"❌ {err}", reply_markup=inline_main_menu())
                 return
-            await callback.message.edit_text(
+            await safe_edit(
+                callback.message,
                 f"✅ Данные обновлены.\n{_cache_footer(monitor)}",
                 reply_markup=inline_main_menu(),
             )
@@ -474,44 +552,29 @@ def setup_handlers(
         if action == "status":
             ok, err = await _load_data(monitor, bot, storage)
             if not ok:
-                await callback.message.edit_text(f"❌ {err}")
+                await safe_edit(callback.message, f"❌ {err}", reply_markup=inline_main_menu())
                 return
             summary = monitor.status_summary(monitor.last_rows)
             text = format_status_summary(
                 summary, len(monitor.last_rows), footer=_cache_footer(monitor)
             )
-            await callback.message.edit_text(
-                text,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-                reply_markup=inline_back_menu(),
-            )
+            await safe_edit(callback.message, text, reply_markup=inline_back_menu())
             return
 
-        actions: dict[str, tuple[str, Callable[[], list[ImageRow]]]] = {
-            "pending": ("Образы, ожидающие передачи на проверку", monitor.pending_rows),
-            "on_review": ("Образы на проверке у ИБ", monitor.rows_on_review),
-            "passed": ("Образы, прошедшие проверку ИБ", monitor.rows_passed),
-            "failed": ("Образы, не прошедшие проверку ИБ", monitor.rows_failed),
-            "today": ("Образы, добавленные сегодня", monitor.rows_for_today),
-        }
-        spec = actions.get(action)
-        if not spec:
-            return
-        title, fn = spec
-        ok, err = await _load_data(monitor, bot, storage)
-        if not ok:
-            await callback.message.edit_text(f"❌ {err}")
-            return
-        await _send_rows(callback.message, monitor, title, fn(), edit=True)
+        if action in VIEWS:
+            ok, err = await _load_data(monitor, bot, storage)
+            if not ok:
+                await safe_edit(callback.message, f"❌ {err}", reply_markup=inline_main_menu())
+                return
+            await _render_view(callback.message, monitor, action, 0, edit=True)
 
     @dp.callback_query(F.data == "date:start")
     async def cb_date_start(callback: CallbackQuery) -> None:
         await callback.answer()
         if callback.message:
-            await callback.message.edit_text(
+            await safe_edit(
+                callback.message,
                 "📅 <b>Выборка по датам</b>\n\nПо какой дате фильтровать?",
-                parse_mode=ParseMode.HTML,
                 reply_markup=inline_date_field_keyboard(),
             )
 
@@ -521,9 +584,9 @@ def setup_handlers(
         await callback.answer()
         if callback.message:
             label = FIELD_LABELS.get(date_field, date_field)
-            await callback.message.edit_text(
+            await safe_edit(
+                callback.message,
                 f"📅 <b>{label.capitalize()}</b>\n\nВыберите период:",
-                parse_mode=ParseMode.HTML,
                 reply_markup=inline_date_period_keyboard(date_field),
             )
 
@@ -540,19 +603,19 @@ def setup_handlers(
             if callback.from_user:
                 _awaiting_custom_date[callback.from_user.id] = date_field
             if callback.message:
-                await callback.message.edit_text(
+                await safe_edit(
+                    callback.message,
                     "✏️ <b>Свой период</b>\n\n"
                     "Отправьте дату или диапазон:\n"
                     "• <code>15.06.2026</code>\n"
                     "• <code>01.06.2026-15.06.2026</code>",
-                    parse_mode=ParseMode.HTML,
                 )
             return
 
         if callback.message:
-            await callback.message.edit_text(
+            await safe_edit(
+                callback.message,
                 "📋 <b>Результат проверки</b>\n\nЧто показать?",
-                parse_mode=ParseMode.HTML,
                 reply_markup=inline_date_status_keyboard(date_field, period),
             )
 
@@ -564,112 +627,70 @@ def setup_handlers(
             return
         date_field, period, status_filter = parts[2], parts[3], parts[4]
         await callback.answer("Загружаю…")
-
         if not callback.message:
             return
-
         try:
             start, end = period_to_range(period)
         except ValueError:
-            await callback.message.edit_text("❌ Неверный период")
+            await callback.answer("Неверный период")
             return
-
-        await _show_date_report(
-            callback.message,
-            monitor,
-            bot,
-            storage,
-            date_field,
-            start,
-            end,
-            status_filter,
-            edit=True,
+        ok, _ = await _load_data(monitor, bot, storage)
+        if not ok:
+            return
+        await _render_date(
+            callback.message, monitor, date_field, start, end, status_filter, 0, edit=True
         )
 
     @dp.callback_query(F.data.startswith("date:c:"))
     async def cb_date_custom(callback: CallbackQuery) -> None:
-        # date:c:tr:2026-06-01_2026-06-15:ok
+        # date:c:<field>:<start>_<end>:<status>
         parts = callback.data.split(":")
         if len(parts) != 5:
             await callback.answer("Ошибка")
             return
-        date_field = parts[2]
-        range_token, status_filter = parts[3], parts[4]
+        date_field, range_token, status_filter = parts[2], parts[3], parts[4]
         await callback.answer("Загружаю…")
-
         if not callback.message:
             return
-
         try:
             start_raw, end_raw = range_token.split("_", 1)
             start = date.fromisoformat(start_raw)
             end = date.fromisoformat(end_raw)
         except ValueError:
-            await callback.message.edit_text("❌ Неверный период")
+            await callback.answer("Неверный период")
             return
-
-        await _show_date_report(
-            callback.message,
-            monitor,
-            bot,
-            storage,
-            date_field,
-            start,
-            end,
-            status_filter,
-            edit=True,
+        ok, _ = await _load_data(monitor, bot, storage)
+        if not ok:
+            return
+        await _render_date(
+            callback.message, monitor, date_field, start, end, status_filter, 0, edit=True
         )
+
+    # --- Reply keyboard buttons ---
 
     @dp.message(F.text.in_(REPLY_BUTTONS))
     async def reply_buttons(message: Message) -> None:
         text = message.text or ""
-        if text == BTN_PENDING:
-            await _query_rows(
-                message, monitor, bot, storage,
-                "Образы, ожидающие передачи на проверку",
-                monitor.pending_rows,
-            )
-        elif text == BTN_ON_REVIEW:
-            await _query_rows(
-                message, monitor, bot, storage,
-                "Образы на проверке у ИБ",
-                monitor.rows_on_review,
-            )
-        elif text == BTN_PASSED:
-            await _query_rows(
-                message, monitor, bot, storage,
-                "Образы, прошедшие проверку ИБ",
-                monitor.rows_passed,
-            )
-        elif text == BTN_FAILED:
-            await _query_rows(
-                message, monitor, bot, storage,
-                "Образы, не прошедшие проверку ИБ",
-                monitor.rows_failed,
-            )
+        mapping = {
+            BTN_PENDING: "pending",
+            BTN_ON_REVIEW: "on_review",
+            BTN_PASSED: "passed",
+            BTN_FAILED: "failed",
+            BTN_TODAY: "today",
+        }
+        if text in mapping:
+            await _serve_view(message, monitor, bot, storage, mapping[text])
         elif text == BTN_STATUS:
-            await _query_status(message, monitor, bot, storage)
+            await cmd_status_via_button(message)
         elif text == BTN_BY_DATE:
             await message.answer(
                 "📅 <b>Выборка по датам</b>\n\nВыберите, по какой дате фильтровать:",
                 parse_mode=ParseMode.HTML,
                 reply_markup=inline_date_field_keyboard(),
             )
-        elif text == BTN_TODAY:
-            await _query_rows(
-                message, monitor, bot, storage,
-                "Образы, добавленные сегодня",
-                monitor.rows_for_today,
-            )
         elif text == BTN_REFRESH:
-            if message.from_user:
-                remaining = _force_refresh_blocked(message.from_user.id)
-                if remaining > 0:
-                    await message.answer(
-                        f"🔄 Обновление доступно через {remaining} сек."
-                    )
-                    return
-                _mark_force_refresh(message.from_user.id)
+            if not await _apply_force(message):
+                return
             wait = await message.answer("⏳ Обновляю данные…")
             ok, err = await _load_data(
                 monitor, bot, storage, force=True, notify_changes=True
@@ -687,6 +708,22 @@ def setup_handlers(
                 parse_mode=ParseMode.HTML,
                 reply_markup=inline_main_menu(),
             )
+
+    async def cmd_status_via_button(message: Message) -> None:
+        ok, err = await _load_data(monitor, bot, storage)
+        if not ok:
+            await message.answer(f"❌ {err}")
+            return
+        summary = monitor.status_summary(monitor.last_rows)
+        text = format_status_summary(
+            summary, len(monitor.last_rows), footer=_cache_footer(monitor)
+        )
+        await message.answer(
+            text,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+            reply_markup=inline_back_menu(),
+        )
 
     @dp.message(F.text)
     async def text_input(message: Message) -> None:
@@ -714,90 +751,3 @@ def setup_handlers(
             parse_mode=ParseMode.HTML,
             reply_markup=_custom_date_keyboard(date_field, start, end),
         )
-
-
-async def broadcast_changes(bot: Bot, storage: Storage, changes) -> None:
-    if not changes:
-        return
-    subscribers = storage.list_subscribers()
-    if not subscribers:
-        return
-    for change in changes:
-        text = format_change(change)
-        for chat_id in subscribers:
-            try:
-                await bot.send_message(
-                    chat_id,
-                    text,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
-            except Exception:
-                logger.exception("Failed to notify chat %s", chat_id)
-            await asyncio.sleep(0.05)
-
-
-async def broadcast_reminder(bot: Bot, storage: Storage, monitor: RegistryMonitor) -> None:
-    subscribers = storage.list_subscribers()
-    if not subscribers:
-        return
-    try:
-        await monitor.ensure_fresh(force=True)
-    except Exception:
-        logger.exception("Reminder scan failed")
-        return
-    pending = monitor.pending_rows()
-    if not pending:
-        return
-    text = format_reminder(pending)
-    for chat_id in subscribers:
-        try:
-            await bot.send_message(
-                chat_id,
-                text,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
-        except Exception:
-            logger.exception("Failed to send reminder to chat %s", chat_id)
-        await asyncio.sleep(0.05)
-
-
-async def scheduled_scan(bot: Bot, monitor: RegistryMonitor, storage: Storage) -> None:
-    try:
-        result = await monitor.ensure_fresh(force=True)
-        await broadcast_changes(bot, storage, result.changes)
-    except Exception:
-        logger.exception("Scheduled scan failed")
-
-
-def setup_scheduler(
-    bot: Bot,
-    monitor: RegistryMonitor,
-    storage: Storage,
-) -> AsyncIOScheduler:
-    tz = ZoneInfo(settings.timezone)
-    scheduler = AsyncIOScheduler(timezone=tz)
-
-    scheduler.add_job(
-        scheduled_scan,
-        IntervalTrigger(minutes=settings.poll_interval_minutes),
-        args=[bot, monitor, storage],
-        id="poll_sheets",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-
-    for hour in settings.reminder_hours:
-        scheduler.add_job(
-            broadcast_reminder,
-            CronTrigger(hour=hour, minute=0, day_of_week="mon-fri"),
-            args=[bot, storage, monitor],
-            id=f"reminder_{hour}",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-        )
-
-    return scheduler

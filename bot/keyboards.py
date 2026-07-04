@@ -111,3 +111,43 @@ def inline_back_menu() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def inline_paginated_menu(
+    page_callback_prefix: str,
+    page: int,
+    pages: int,
+) -> InlineKeyboardMarkup:
+    """Keyboard with prev/next navigation plus date/menu shortcuts.
+
+    page_callback_prefix already encodes the view, e.g. "pg:pending" or
+    "pgd:tr:2026-06-01_2026-06-30:fail". The page index is appended.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    if pages > 1:
+        nav: list[InlineKeyboardButton] = []
+        if page > 0:
+            nav.append(
+                InlineKeyboardButton(
+                    text="◀️", callback_data=f"{page_callback_prefix}:{page - 1}"
+                )
+            )
+        nav.append(
+            InlineKeyboardButton(
+                text=f"{page + 1}/{pages}", callback_data="noop"
+            )
+        )
+        if page < pages - 1:
+            nav.append(
+                InlineKeyboardButton(
+                    text="▶️", callback_data=f"{page_callback_prefix}:{page + 1}"
+                )
+            )
+        rows.append(nav)
+    rows.append(
+        [
+            InlineKeyboardButton(text=BTN_BY_DATE, callback_data="date:start"),
+            InlineKeyboardButton(text="🏠 Меню", callback_data="menu"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)

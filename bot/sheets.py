@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import logging
@@ -19,18 +20,35 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 
+MAX_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 2
+
 
 class SheetsClient:
     def __init__(self) -> None:
         self._gc: gspread.Client | None = None
 
     async def fetch_rows(self) -> list[ImageRow]:
-        if settings.google_credentials_path.exists():
-            return await self._fetch_via_api()
-        return await self._fetch_via_csv_export()
+        last_exc: Exception | None = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                if settings.google_credentials_path.exists():
+                    return await self._fetch_via_api()
+                return await self._fetch_via_csv_export()
+            except Exception as exc:
+                last_exc = exc
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_BACKOFF_SECONDS * attempt
+                    logger.warning(
+                        "Sheet fetch attempt %s/%s failed: %s (retry in %ss)",
+                        attempt, MAX_RETRIES, exc, delay,
+                    )
+                    await asyncio.sleep(delay)
+        assert last_exc is not None
+        raise last_exc
 
     async def _fetch_via_api(self) -> list[ImageRow]:
-        rows = self._fetch_sync_api()
+        rows = await asyncio.to_thread(self._fetch_sync_api)
         return self._parse_rows(rows)
 
     def _fetch_sync_api(self) -> list[list[str]]:

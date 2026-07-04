@@ -15,8 +15,11 @@ class Storage:
 
     @contextmanager
     def _connect(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         try:
             yield conn
             conn.commit()
@@ -128,9 +131,38 @@ class Storage:
                 return None
             return ImageRow.from_payload(row["payload"])
 
-    def upsert_snapshot(self, image_row: ImageRow, content_hash: str) -> None:
+    def all_snapshots(self) -> dict[int, tuple[str, ImageRow | None]]:
+        """Load every snapshot at once: {row_number: (content_hash, ImageRow)}."""
         with self._connect() as conn:
-            conn.execute(
+            cur = conn.execute(
+                "SELECT row_number, content_hash, payload FROM row_snapshots"
+            )
+            return {
+                row["row_number"]: (
+                    row["content_hash"],
+                    ImageRow.from_payload(row["payload"]),
+                )
+                for row in cur.fetchall()
+            }
+
+    def upsert_snapshots(self, items: list[tuple[ImageRow, str]]) -> None:
+        if not items:
+            return
+        now = _now_iso()
+        params = [
+            (
+                image_row.row_number,
+                content_hash,
+                image_row.tag,
+                image_row.developer,
+                image_row.status,
+                image_row.to_payload(),
+                now,
+            )
+            for image_row, content_hash in items
+        ]
+        with self._connect() as conn:
+            conn.executemany(
                 """
                 INSERT INTO row_snapshots
                     (row_number, content_hash, tag, developer, status, payload, updated_at)
@@ -143,15 +175,16 @@ class Storage:
                     payload = excluded.payload,
                     updated_at = excluded.updated_at
                 """,
-                (
-                    image_row.row_number,
-                    content_hash,
-                    image_row.tag,
-                    image_row.developer,
-                    image_row.status,
-                    image_row.to_payload(),
-                    _now_iso(),
-                ),
+                params,
+            )
+
+    def delete_snapshots(self, row_numbers: list[int]) -> None:
+        if not row_numbers:
+            return
+        with self._connect() as conn:
+            conn.executemany(
+                "DELETE FROM row_snapshots WHERE row_number = ?",
+                [(rn,) for rn in row_numbers],
             )
 
     def log_scan(

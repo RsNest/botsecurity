@@ -60,13 +60,21 @@ class RegistryMonitor:
         fetched_at = datetime.now(timezone.utc)
         try:
             rows = await self.sheets.fetch_rows()
-            bootstrap = self.storage.snapshot_count() == 0
-            changes = self._detect_changes(rows)
-            for change in changes:
-                self.storage.upsert_snapshot(
-                    change.row,
-                    change.row.content_hash(),
-                )
+            snapshots = self.storage.all_snapshots()
+            bootstrap = len(snapshots) == 0
+
+            changes = self._detect_changes(rows, snapshots)
+
+            to_upsert = [
+                (change.row, change.row.content_hash())
+                for change in changes
+                if change.change_type != "removed"
+            ]
+            self.storage.upsert_snapshots(to_upsert)
+
+            removed = [c.row.row_number for c in changes if c.change_type == "removed"]
+            self.storage.delete_snapshots(removed)
+
             if bootstrap:
                 changes = []
                 logger.info(
@@ -82,16 +90,23 @@ class RegistryMonitor:
             self.storage.log_scan(0, 0, str(exc))
             raise
 
-    def _detect_changes(self, rows: list[ImageRow]) -> list[RowChange]:
+    def _detect_changes(
+        self,
+        rows: list[ImageRow],
+        snapshots: dict[int, tuple[str, ImageRow | None]],
+    ) -> list[RowChange]:
         changes: list[RowChange] = []
+        seen: set[int] = set()
+
         for row in rows:
-            old_hash = self.storage.get_snapshot_hash(row.row_number)
+            seen.add(row.row_number)
+            snapshot = snapshots.get(row.row_number)
             new_hash = row.content_hash()
-            if old_hash is None:
+            if snapshot is None:
                 changes.append(RowChange(row=row, change_type="new", changed_fields={}))
                 continue
+            old_hash, old_row = snapshot
             if old_hash != new_hash:
-                old_row = self.storage.get_snapshot_row(row.row_number)
                 changes.append(
                     RowChange(
                         row=row,
@@ -99,6 +114,14 @@ class RegistryMonitor:
                         changed_fields=self._diff_fields(old_row, row),
                     )
                 )
+
+        # Rows that existed before but are gone now → removed
+        for row_number, (_, old_row) in snapshots.items():
+            if row_number not in seen and old_row is not None:
+                changes.append(
+                    RowChange(row=old_row, change_type="removed", changed_fields={})
+                )
+
         return changes
 
     def _diff_fields(
@@ -174,6 +197,24 @@ class RegistryMonitor:
             row
             for row in source
             if query in row.developer.lower()
+        ]
+
+    def find_rows(
+        self,
+        query: str,
+        rows: list[ImageRow] | None = None,
+    ) -> list[ImageRow]:
+        source = rows if rows is not None else self._last_rows
+        q = query.strip().lower()
+        if not q:
+            return []
+        return [
+            row
+            for row in source
+            if q in row.tag.lower()
+            or q in row.corrected_tag.lower()
+            or q in row.final_tag.lower()
+            or q in row.release.lower()
         ]
 
     def stale_rows(

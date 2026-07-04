@@ -22,6 +22,7 @@
 | `/passed` | Прошли проверку ИБ |
 | `/failed` | Не прошли проверку ИБ |
 | `/dates` | Выборка по датам (кнопки) |
+| `/find текст` | Поиск по тегу/релизу |
 | `/status` | Сводка по статусам |
 | `/today` | Добавленные сегодня |
 | `/by_dev Зуев` | Образы разработчика |
@@ -29,6 +30,7 @@
 | `/subscribe` / `/unsubscribe` | Подписка / отписка |
 | `/sync` | *(админ)* Принудительная синхронизация |
 | `/stats` | *(админ)* Статистика бота |
+| `/broadcast текст` | *(админ)* Рассылка всем подписчикам |
 
 ## Быстрый старт (Docker на VDS)
 
@@ -87,12 +89,16 @@ python -m bot.main
 
 ```
 bot/
-  main.py        — точка входа
-  handlers.py    — команды + планировщик
+  main.py        — точка входа, меню команд, graceful shutdown
+  handlers.py    — команды, кнопки, пагинация
+  scheduler.py   — планировщик + рассылки
   monitor.py     — сравнение с предыдущим состоянием
-  sheets.py      — чтение Google Sheets
-  storage.py     — SQLite (подписчики, снапшоты)
-  formatters.py  — сообщения в Telegram
+  sheets.py      — чтение Google Sheets (retry + threadpool)
+  storage.py     — SQLite (WAL, батч-снапшоты)
+  formatters.py  — сообщения (HTML-escape, пагинация)
+  keyboards.py   — inline и reply клавиатуры
+  dates.py       — разбор дат и периодов
+  utils.py       — безопасная отправка/редактирование
 data/            — SQLite база (volume)
 ```
 

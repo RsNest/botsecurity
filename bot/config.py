@@ -25,6 +25,8 @@ class Settings:
     poll_interval_minutes: int
     reminder_hours: tuple[int, ...]
     timezone: str
+    cache_ttl_seconds: int
+    force_refresh_cooldown: int
 
     @classmethod
     def load(cls) -> Settings:
@@ -58,6 +60,8 @@ class Settings:
             poll_interval_minutes=int(os.getenv("POLL_INTERVAL_MINUTES", "60")),
             reminder_hours=reminder_hours,
             timezone=os.getenv("TIMEZONE", "Europe/Moscow"),
+            cache_ttl_seconds=int(os.getenv("CACHE_TTL_SECONDS", "300")),
+            force_refresh_cooldown=int(os.getenv("FORCE_REFRESH_COOLDOWN", "10")),
         )
 
     def is_admin(self, user_id: int) -> bool:

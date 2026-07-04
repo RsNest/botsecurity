@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime
 
 
+from bot.dates import parse_flexible_date
+
 def _normalize(value: str | None) -> str:
     return (value or "").strip()
 
@@ -70,6 +72,17 @@ class ImageRow:
     def is_failed(self) -> bool:
         return self.status_normalized() == "не прошло проверку"
 
+    def is_passed(self) -> bool:
+        return self.status_normalized() == "прошло проверку"
+
+    def parse_check_date(self) -> date | None:
+        return parse_flexible_date(self.check_date)
+
+    def date_for_field(self, field: str) -> date | None:
+        if field == "ch":
+            return self.parse_check_date()
+        return self.parse_transfer_date()
+
     def to_payload(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
 
@@ -96,13 +109,7 @@ class ImageRow:
         return tag[: max_len - 1] + "…"
 
     def parse_transfer_date(self) -> date | None:
-        raw = self.transfer_date.strip()
-        for fmt in ("%d.%m.%Y", "%d.%m.%y"):
-            try:
-                return datetime.strptime(raw, fmt).date()
-            except ValueError:
-                continue
-        return None
+        return parse_flexible_date(self.transfer_date)
 
 
 @dataclass

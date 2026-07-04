@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timezone
 
-from bot.config import FIELD_NAMES
+from bot.config import FIELD_NAMES, settings
 from bot.models import ImageRow, RowChange, ScanResult
 from bot.sheets import SheetsClient
 from bot.storage import Storage
@@ -20,10 +20,41 @@ class RegistryMonitor:
         self.sheets = sheets or SheetsClient()
         self.storage = storage or Storage()
         self._last_rows: list[ImageRow] = []
+        self._last_fetched_at: datetime | None = None
 
     @property
     def last_rows(self) -> list[ImageRow]:
         return list(self._last_rows)
+
+    @property
+    def last_fetched_at(self) -> datetime | None:
+        return self._last_fetched_at
+
+    def cache_age_label(self) -> str:
+        if not self._last_fetched_at:
+            return ""
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(settings.timezone)
+        local = self._last_fetched_at.astimezone(tz)
+        return f"🕐 Данные на {local.strftime('%d.%m.%Y %H:%M')}"
+
+    async def ensure_fresh(self, force: bool = False) -> ScanResult:
+        now = datetime.now(timezone.utc)
+        if (
+            not force
+            and self._last_rows
+            and self._last_fetched_at
+            and (now - self._last_fetched_at).total_seconds() < settings.cache_ttl_seconds
+        ):
+            return ScanResult(
+                rows=self._last_rows,
+                changes=[],
+                fetched_at=self._last_fetched_at,
+            )
+        result = await self.scan()
+        self._last_fetched_at = result.fetched_at
+        return result
 
     async def scan(self) -> ScanResult:
         fetched_at = datetime.now(timezone.utc)
@@ -44,6 +75,7 @@ class RegistryMonitor:
                 )
             self.storage.log_scan(len(rows), len(changes))
             self._last_rows = rows
+            self._last_fetched_at = fetched_at
             return ScanResult(rows=rows, changes=changes, fetched_at=fetched_at)
         except Exception as exc:
             logger.exception("Scan failed")
@@ -95,6 +127,31 @@ class RegistryMonitor:
     def rows_failed(self, rows: list[ImageRow] | None = None) -> list[ImageRow]:
         source = rows if rows is not None else self._last_rows
         return [row for row in source if row.is_failed()]
+
+    def rows_passed(self, rows: list[ImageRow] | None = None) -> list[ImageRow]:
+        source = rows if rows is not None else self._last_rows
+        return [row for row in source if row.is_passed()]
+
+    def rows_by_date_range(
+        self,
+        start: date,
+        end: date,
+        date_field: str = "tr",
+        status_filter: str = "all",
+        rows: list[ImageRow] | None = None,
+    ) -> list[ImageRow]:
+        source = rows if rows is not None else self._last_rows
+        result: list[ImageRow] = []
+        for row in source:
+            row_date = row.date_for_field(date_field)
+            if not row_date or row_date < start or row_date > end:
+                continue
+            if status_filter == "ok" and not row.is_passed():
+                continue
+            if status_filter == "fail" and not row.is_failed():
+                continue
+            result.append(row)
+        return result
 
     def rows_for_today(self, rows: list[ImageRow] | None = None) -> list[ImageRow]:
         source = rows if rows is not None else self._last_rows

@@ -95,29 +95,40 @@ def _is_on_review_status_change(change: RowChange) -> bool:
     return normalize_status(status[1]) == "на проверке"
 
 
-def format_pending_list(rows: list[ImageRow], title: str) -> str:
+def format_pending_list(
+    rows: list[ImageRow],
+    title: str,
+    footer: str = "",
+) -> str:
     if not rows:
-        return f"<b>{title}</b>\n\nНет записей."
-    chunks = [f"<b>{title}</b>", f"Всего: {len(rows)}", ""]
-    for row in rows[:30]:
-        chunks.append(format_row_brief(row))
-    if len(rows) > 30:
-        chunks.append(f"\n… и ещё {len(rows) - 30}")
-    chunks.append(f'\n<a href="{SHEET_URL}">Открыть таблицу</a>')
-    return "\n".join(chunks)
+        body = f"<b>{title}</b>\n\nНет записей."
+    else:
+        chunks = [f"<b>{title}</b>", f"Всего: {len(rows)}", ""]
+        for row in rows[:30]:
+            chunks.append(format_row_brief(row))
+        if len(rows) > 30:
+            chunks.append(f"\n… и ещё {len(rows) - 30}")
+        body = "\n".join(chunks)
+    if footer:
+        body += f"\n\n{footer}"
+    body += f'\n\n<a href="{SHEET_URL}">Открыть таблицу</a>'
+    return body
 
 
-def format_status_summary(summary: dict[str, int], total: int) -> str:
-    return (
+def format_status_summary(summary: dict[str, int], total: int, footer: str = "") -> str:
+    text = (
         "<b>Сводка по реестру образов ИБ</b>\n\n"
         f"Всего записей: {total}\n"
         f"⏳ Без статуса / ждут передачи: {summary['pending'] + summary['not_transferred']}\n"
         f"🔍 На проверке: {summary['on_review']}\n"
         f"✅ Прошло проверку: {summary['passed']}\n"
         f"❌ Не прошло проверку: {summary['failed']}\n"
-        f"⚠️ Не передано: {summary['not_transferred']}\n"
-        f'\n<a href="{SHEET_URL}">Открыть таблицу</a>'
+        f"⚠️ Не передано: {summary['not_transferred']}"
     )
+    if footer:
+        text += f"\n\n{footer}"
+    text += f'\n\n<a href="{SHEET_URL}">Открыть таблицу</a>'
+    return text
 
 
 def format_reminder(rows: list[ImageRow]) -> str:
@@ -133,7 +144,9 @@ def format_help(is_subscribed: bool) -> str:
         "<b>Команды:</b>\n"
         "/pending — образы без статуса / не переданы\n"
         "/on_review — образы на проверке у ИБ\n"
-        "/failed — не прошли проверку ИБ\n"
+        "/passed — прошли проверку\n"
+        "/failed — не прошли проверку\n"
+        "/dates — выборка по датам (кнопки)\n"
         "/status — сводка по статусам\n"
         "/today — добавленные сегодня\n"
         "/by_dev фамилия — образы разработчика\n"
@@ -154,5 +167,6 @@ def format_welcome() -> str:
         "• изменения статусов\n"
         "• напоминания о непереданных образах\n\n"
         "Вы подписаны на уведомления.\n"
-        "Используйте /help для списка команд."
+        "Используйте кнопки ниже или /help.\n"
+        "Для выборки по датам — кнопка «📅 По датам»."
     )

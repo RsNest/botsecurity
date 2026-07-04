@@ -91,6 +91,11 @@ class Storage:
             cur = conn.execute("SELECT COUNT(*) AS c FROM subscribers")
             return int(cur.fetchone()["c"])
 
+    def snapshot_count(self) -> int:
+        with self._connect() as conn:
+            cur = conn.execute("SELECT COUNT(*) AS c FROM row_snapshots")
+            return int(cur.fetchone()["c"])
+
     def get_snapshot(self, row_number: int) -> str | None:
         with self._connect() as conn:
             cur = conn.execute(

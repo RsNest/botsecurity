@@ -29,11 +29,18 @@ class RegistryMonitor:
         fetched_at = datetime.now(timezone.utc)
         try:
             rows = await self.sheets.fetch_rows()
+            bootstrap = self.storage.snapshot_count() == 0
             changes = self._detect_changes(rows)
             for change in changes:
                 self.storage.upsert_snapshot(
                     change.row,
                     change.row.content_hash(),
+                )
+            if bootstrap:
+                changes = []
+                logger.info(
+                    "Bootstrap complete: seeded %s rows without notifications",
+                    len(rows),
                 )
             self.storage.log_scan(len(rows), len(changes))
             self._last_rows = rows

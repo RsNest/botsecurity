@@ -1,0 +1,16 @@
+services:
+  bot:
+    build: .
+    container_name: botsecurity
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      # Раскомментируйте после добавления credentials.json:
+      # - ./credentials.json:/app/credentials.json:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+import csv
+import io
+import logging
+from urllib.parse import urlencode
+
+import aiohttp
+import gspread
+from google.oauth2.service_account import Credentials
+
+from bot.config import DATA_START_ROW, settings
+from bot.models import ImageRow
+
+logger = logging.getLogger(__name__)
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
+
+
+class SheetsClient:
+    def __init__(self) -> None:
+        self._gc: gspread.Client | None = None
+
+    async def fetch_rows(self) -> list[ImageRow]:
+        if settings.google_credentials_path.exists():
+            return await self._fetch_via_api()
+        return await self._fetch_via_csv_export()
+
+    async def _fetch_via_api(self) -> list[ImageRow]:
+        rows = self._fetch_sync_api()
+        return self._parse_rows(rows)
+
+    def _fetch_sync_api(self) -> list[list[str]]:
+        if self._gc is None:
+            creds = Credentials.from_service_account_file(
+                str(settings.google_credentials_path),
+                scopes=SCOPES,
+            )
+            self._gc = gspread.authorize(creds)
+
+        spreadsheet = self._gc.open_by_key(settings.spreadsheet_id)
+        worksheet = self._find_worksheet(spreadsheet)
+        values = worksheet.get_all_values()
+        return values
+
+    def _find_worksheet(self, spreadsheet: gspread.Spreadsheet):
+        target_gid = str(settings.sheet_gid)
+        for ws in spreadsheet.worksheets():
+            if str(ws.id) == target_gid:
+                return ws
+        return spreadsheet.sheet1
+
+    async def _fetch_via_csv_export(self) -> list[ImageRow]:
+        params = urlencode({"format": "csv", "gid": settings.sheet_gid})
+        url = (
+            f"https://docs.google.com/spreadsheets/d/"
+            f"{settings.spreadsheet_id}/export?{params}"
+        )
+        timeout = aiohttp.ClientTimeout(total=60)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    raise RuntimeError(
+                        "Не удалось скачать таблицу через CSV export "
+                        f"(HTTP {response.status}). "
+                        "Добавьте credentials.json или откройте доступ к таблице. "
+                        f"Ответ: {text[:200]}"
+                    )
+                content = await response.text(encoding="utf-8")
+        reader = csv.reader(io.StringIO(content))
+        rows = list(reader)
+        return self._parse_rows(rows)
+
+    def _parse_rows(self, values: list[list[str]]) -> list[ImageRow]:
+        result: list[ImageRow] = []
+        for idx, cells in enumerate(values):
+            row_number = idx + 1
+            if row_number < DATA_START_ROW:
+                continue
+            row = ImageRow.from_sheet_row(row_number, cells)
+            if row:
+                result.append(row)
+        return result

@@ -29,9 +29,10 @@ def _status_label(row: ImageRow) -> str:
     return labels.get(status, esc(row.status))
 
 
-def format_row_brief(row: ImageRow) -> str:
+def format_row_brief(row: ImageRow, index: int | None = None) -> str:
+    bullet = f"{index}." if index is not None else "•"
     lines = [
-        f"• <b>{esc(row.short_tag())}</b>",
+        f"{bullet} <b>{esc(row.short_tag())}</b>",
         f"  👤 {esc(row.developer) or '—'} | 📅 {esc(row.transfer_date) or '—'}",
         f"  {_status_label(row)}",
     ]
@@ -120,6 +121,21 @@ def format_rows_page(
     footer: str = "",
 ) -> tuple[str, int, int]:
     """Return (text, page, total_pages) for a paginated list view."""
+    text, page, pages, _ = format_rows_page_numbered(rows, title, page, footer)
+    return text, page, pages
+
+
+def format_rows_page_numbered(
+    rows: list[ImageRow],
+    title: str,
+    page: int = 0,
+    footer: str = "",
+) -> tuple[str, int, int, list[int]]:
+    """Paginated list where items are numbered 1..N within the page.
+
+    Returns (text, page, total_pages, row_numbers_on_page) so the keyboard
+    can attach detail buttons for each numbered item.
+    """
     pages = total_pages(len(rows))
     page = max(0, min(page, pages - 1))
 
@@ -128,7 +144,7 @@ def format_rows_page(
         if footer:
             text += f"\n\n{footer}"
         text += f"\n\n{_SHEET_LINK}"
-        return text, 0, 1
+        return text, 0, 1, []
 
     start = page * PAGE_SIZE
     chunk = rows[start : start + PAGE_SIZE]
@@ -138,11 +154,52 @@ def format_rows_page(
         header += f" · стр. {page + 1}/{pages}"
 
     parts = [header, ""]
-    parts.extend(format_row_brief(row) for row in chunk)
+    parts.extend(
+        format_row_brief(row, index=i + 1) for i, row in enumerate(chunk)
+    )
+    if len(chunk) > 0:
+        parts.append("\n🔎 Подробнее — кнопки с номерами ниже")
     if footer:
         parts.append(f"\n{footer}")
     parts.append(f"\n{_SHEET_LINK}")
-    return "\n".join(parts), page, pages
+    return "\n".join(parts), page, pages, [row.row_number for row in chunk]
+
+
+def format_developers_list(devs: list[tuple[str, int, int]]) -> str:
+    if not devs:
+        return "<b>Разработчики</b>\n\nНет данных."
+    parts = ["<b>👥 Разработчики в реестре</b>", ""]
+    for name, total, pending in devs[:25]:
+        line = f"• <b>{esc(name)}</b> — {total}"
+        if pending:
+            line += f" (⏳ {pending} ждут)"
+        parts.append(line)
+    parts.append("\nНажмите кнопку, чтобы посмотреть образы.")
+    return "\n".join(parts)
+
+
+def format_releases_list(releases: list[tuple[str, int]]) -> str:
+    if not releases:
+        return "<b>Релизы</b>\n\nНет данных."
+    parts = ["<b>🏷 Релизы в реестре</b> (свежие сверху)", ""]
+    for release, count in releases:
+        parts.append(f"• <b>{esc(release)}</b> — {count}")
+    parts.append("\nНажмите кнопку, чтобы посмотреть образы релиза.")
+    return "\n".join(parts)
+
+
+def format_digest(summary: dict[str, int], total: int, new_week: int, stale: int) -> str:
+    return (
+        "📬 <b>Еженедельный дайджест реестра ИБ</b>\n\n"
+        f"Всего записей: {total}\n"
+        f"🆕 Новых за неделю: {new_week}\n"
+        f"⏳ Ожидают передачи: {summary['pending'] + summary['not_transferred']}\n"
+        f"🔍 На проверке: {summary['on_review']}\n"
+        f"✅ Прошло проверку: {summary['passed']}\n"
+        f"❌ Не прошло проверку: {summary['failed']}\n"
+        f"🕰 Висят без статуса ≥ 3 дней: {stale}\n"
+        f"\n{_SHEET_LINK}"
+    )
 
 
 def format_status_summary(summary: dict[str, int], total: int, footer: str = "") -> str:
@@ -174,20 +231,27 @@ def format_help(is_subscribed: bool) -> str:
     return (
         "<b>Бот реестра образов ИБ</b>\n\n"
         "Публичный бот для мониторинга Google-таблицы с образами.\n\n"
-        "<b>Команды:</b>\n"
-        "/pending — образы без статуса / не переданы\n"
-        "/on_review — образы на проверке у ИБ\n"
+        "🔎 <b>Поиск</b>: просто напишите текст в чат — например,\n"
+        "<code>leadgen</code> или <code>Зуев api</code>\n\n"
+        "<b>Списки:</b>\n"
+        "/pending — ждут передачи на проверку\n"
+        "/on_review — на проверке у ИБ\n"
         "/passed — прошли проверку\n"
         "/failed — не прошли проверку\n"
-        "/dates — выборка по датам (кнопки)\n"
-        "/find текст — поиск по тегу\n"
-        "/status — сводка по статусам\n"
         "/today — добавленные сегодня\n"
-        "/by_dev фамилия — образы разработчика\n"
-        "/stale 3 — висят без статуса ≥ N дней\n"
+        "/last — последние добавленные\n"
+        "/stale 3 — висят без статуса ≥ N дней\n\n"
+        "<b>Навигация:</b>\n"
+        "/devs — по разработчикам (кнопки)\n"
+        "/releases — по релизам (кнопки)\n"
+        "/dates — выборка по датам (кнопки)\n"
+        "/status — сводка по статусам\n\n"
+        "<b>Поиск командой:</b>\n"
+        "/find текст — поиск по всем полям\n"
+        "/by_dev фамилия — образы разработчика\n\n"
+        "<b>Подписка:</b>\n"
         "/subscribe — подписаться на уведомления\n"
-        "/unsubscribe — отписаться\n"
-        "/help — эта справка\n\n"
+        "/unsubscribe — отписаться\n\n"
         f"{sub_state}\n"
         f"{_SHEET_LINK}"
     )
@@ -200,7 +264,8 @@ def format_welcome() -> str:
         "• новые образы от разработчиков\n"
         "• изменения статусов\n"
         "• напоминания о непереданных образах\n\n"
+        "🔎 <b>Поиск</b>: просто напишите текст в чат\n"
+        "(например <code>leadgen</code> или <code>Зуев api</code>)\n\n"
         "Вы подписаны на уведомления.\n"
-        "Используйте кнопки ниже или /help.\n"
-        "Для выборки по датам — кнопка «📅 По датам»."
+        "Кнопки ниже — быстрый доступ, /help — все команды."
     )

@@ -13,6 +13,8 @@ BTN_BY_DATE = "📅 По датам"
 BTN_TODAY = "📆 Сегодня"
 BTN_REFRESH = "🔄 Обновить"
 BTN_MENU = "🏠 Меню"
+BTN_DEVS = "👥 Разработчики"
+BTN_RELEASES = "🏷 Релизы"
 
 REPLY_BUTTONS = {
     BTN_PENDING,
@@ -24,6 +26,8 @@ REPLY_BUTTONS = {
     BTN_TODAY,
     BTN_REFRESH,
     BTN_MENU,
+    BTN_DEVS,
+    BTN_RELEASES,
 }
 
 
@@ -32,11 +36,12 @@ def main_reply_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=BTN_PENDING), KeyboardButton(text=BTN_ON_REVIEW)],
             [KeyboardButton(text=BTN_PASSED), KeyboardButton(text=BTN_FAILED)],
+            [KeyboardButton(text=BTN_DEVS), KeyboardButton(text=BTN_RELEASES)],
             [KeyboardButton(text=BTN_STATUS), KeyboardButton(text=BTN_BY_DATE)],
             [KeyboardButton(text=BTN_TODAY), KeyboardButton(text=BTN_REFRESH)],
         ],
         resize_keyboard=True,
-        input_field_placeholder="Выберите действие или /help",
+        input_field_placeholder="Поиск: напишите текст, например leadgen",
     )
 
 
@@ -52,6 +57,10 @@ def inline_main_menu() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text=BTN_PASSED, callback_data="act:passed"),
                 InlineKeyboardButton(text=BTN_FAILED, callback_data="act:failed"),
+            ],
+            [
+                InlineKeyboardButton(text=BTN_DEVS, callback_data="devs"),
+                InlineKeyboardButton(text=BTN_RELEASES, callback_data="rels"),
             ],
             [
                 InlineKeyboardButton(text=BTN_STATUS, callback_data="act:status"),
@@ -117,13 +126,29 @@ def inline_paginated_menu(
     page_callback_prefix: str,
     page: int,
     pages: int,
+    row_numbers: list[int] | None = None,
 ) -> InlineKeyboardMarkup:
-    """Keyboard with prev/next navigation plus date/menu shortcuts.
+    """Keyboard with numbered detail buttons, prev/next nav, and shortcuts.
 
     page_callback_prefix already encodes the view, e.g. "pg:pending" or
     "pgd:tr:2026-06-01_2026-06-30:fail". The page index is appended.
+    row_numbers are registry row numbers of items on this page; each gets a
+    numbered button opening the detail card.
     """
     rows: list[list[InlineKeyboardButton]] = []
+
+    if row_numbers:
+        detail_row: list[InlineKeyboardButton] = []
+        for i, rn in enumerate(row_numbers):
+            detail_row.append(
+                InlineKeyboardButton(text=str(i + 1), callback_data=f"row:{rn}")
+            )
+            if len(detail_row) == 5:
+                rows.append(detail_row)
+                detail_row = []
+        if detail_row:
+            rows.append(detail_row)
+
     if pages > 1:
         nav: list[InlineKeyboardButton] = []
         if page > 0:
@@ -150,4 +175,44 @@ def inline_paginated_menu(
             InlineKeyboardButton(text="🏠 Меню", callback_data="menu"),
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def inline_detail_card() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="menu")],
+        ]
+    )
+
+
+def inline_developers_keyboard(devs: list[tuple[str, int, int]]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    pair: list[InlineKeyboardButton] = []
+    for name, total, pending in devs[:24]:
+        label = f"{name} ({total})"
+        if pending:
+            label = f"{name} ({total}·⏳{pending})"
+        # callback_data limit is 64 bytes; Cyrillic is 2 bytes/char
+        pair.append(InlineKeyboardButton(text=label, callback_data=f"dev:{name[:25]}"))
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+    if pair:
+        rows.append(pair)
+    rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def inline_releases_keyboard(releases: list[tuple[str, int]]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for release, count in releases[:20]:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{release} ({count})", callback_data=f"rel:{release[:55]}"
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

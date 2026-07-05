@@ -25,19 +25,24 @@ from bot.dates import (
 )
 from bot.formatters import (
     format_change,
+    format_developers_list,
     format_help,
-    format_rows_page,
+    format_releases_list,
+    format_row_detail,
+    format_rows_page_numbered,
     format_status_summary,
     format_welcome,
 )
 from bot.keyboards import (
     BTN_BY_DATE,
+    BTN_DEVS,
     BTN_FAILED,
     BTN_MENU,
     BTN_ON_REVIEW,
     BTN_PASSED,
     BTN_PENDING,
     BTN_REFRESH,
+    BTN_RELEASES,
     BTN_STATUS,
     BTN_TODAY,
     REPLY_BUTTONS,
@@ -45,8 +50,11 @@ from bot.keyboards import (
     inline_date_field_keyboard,
     inline_date_period_keyboard,
     inline_date_status_keyboard,
+    inline_detail_card,
+    inline_developers_keyboard,
     inline_main_menu,
     inline_paginated_menu,
+    inline_releases_keyboard,
     main_reply_keyboard,
 )
 from bot.models import ImageRow
@@ -69,6 +77,7 @@ VIEWS: dict[str, tuple[str, str]] = {
     "passed": ("Образы, прошедшие проверку ИБ", "rows_passed"),
     "failed": ("Образы, не прошедшие проверку ИБ", "rows_failed"),
     "today": ("Образы, добавленные сегодня", "rows_for_today"),
+    "last": ("Последние добавленные образы", "last_rows_added"),
 }
 
 
@@ -136,6 +145,21 @@ async def _apply_force(message: Message) -> bool:
 
 # --- Rendering ---------------------------------------------------------------
 
+async def _render_page(
+    target: Message,
+    text: str,
+    kb,
+    *,
+    edit: bool,
+) -> None:
+    if edit:
+        await safe_edit(target, text, reply_markup=kb)
+    else:
+        await target.answer(
+            text, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=kb
+        )
+
+
 async def _render_view(
     target: Message,
     monitor: RegistryMonitor,
@@ -146,14 +170,11 @@ async def _render_view(
 ) -> None:
     title, method = VIEWS[token]
     rows = getattr(monitor, method)()
-    text, page, pages = format_rows_page(rows, title, page, footer=_cache_footer(monitor))
-    kb = inline_paginated_menu(f"pg:{token}", page, pages)
-    if edit:
-        await safe_edit(target, text, reply_markup=kb)
-    else:
-        await target.answer(
-            text, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=kb
-        )
+    text, page, pages, row_numbers = format_rows_page_numbered(
+        rows, title, page, footer=_cache_footer(monitor)
+    )
+    kb = inline_paginated_menu(f"pg:{token}", page, pages, row_numbers)
+    await _render_page(target, text, kb, edit=edit)
 
 
 async def _render_dynamic(
@@ -167,14 +188,11 @@ async def _render_dynamic(
     edit: bool,
 ) -> None:
     _dynamic_results[chat_id] = (title, rows)
-    text, page, pages = format_rows_page(rows, title, page, footer=_cache_footer(monitor))
-    kb = inline_paginated_menu("pgm", page, pages)
-    if edit:
-        await safe_edit(target, text, reply_markup=kb)
-    else:
-        await target.answer(
-            text, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=kb
-        )
+    text, page, pages, row_numbers = format_rows_page_numbered(
+        rows, title, page, footer=_cache_footer(monitor)
+    )
+    kb = inline_paginated_menu("pgm", page, pages, row_numbers)
+    await _render_page(target, text, kb, edit=edit)
 
 
 async def _render_date(
@@ -193,16 +211,13 @@ async def _render_date(
     field = FIELD_LABELS.get(date_field, date_field)
     status = STATUS_LABELS.get(status_filter, status_filter)
     title = f"Выборка: {status} · {field} · {period}"
-    text, page, pages = format_rows_page(rows, title, page, footer=_cache_footer(monitor))
+    text, page, pages, row_numbers = format_rows_page_numbered(
+        rows, title, page, footer=_cache_footer(monitor)
+    )
     token = f"{start.isoformat()}_{end.isoformat()}"
     prefix = f"pgd:{date_field}:{token}:{status_filter}"
-    kb = inline_paginated_menu(prefix, page, pages)
-    if edit:
-        await safe_edit(target, text, reply_markup=kb)
-    else:
-        await target.answer(
-            text, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=kb
-        )
+    kb = inline_paginated_menu(prefix, page, pages, row_numbers)
+    await _render_page(target, text, kb, edit=edit)
 
 
 async def _serve_view(
@@ -305,6 +320,36 @@ def setup_handlers(
     @dp.message(Command("today"))
     async def cmd_today(message: Message) -> None:
         await _serve_view(message, monitor, bot, storage, "today")
+
+    @dp.message(Command("last"))
+    async def cmd_last(message: Message) -> None:
+        await _serve_view(message, monitor, bot, storage, "last")
+
+    @dp.message(Command("devs"))
+    async def cmd_devs(message: Message) -> None:
+        ok, err = await _load_data(monitor, bot, storage)
+        if not ok:
+            await message.answer(f"❌ {err}")
+            return
+        devs = monitor.developers_summary()
+        await message.answer(
+            format_developers_list(devs),
+            parse_mode=ParseMode.HTML,
+            reply_markup=inline_developers_keyboard(devs),
+        )
+
+    @dp.message(Command("releases"))
+    async def cmd_releases(message: Message) -> None:
+        ok, err = await _load_data(monitor, bot, storage)
+        if not ok:
+            await message.answer(f"❌ {err}")
+            return
+        releases = monitor.releases_summary(limit=20)
+        await message.answer(
+            format_releases_list(releases),
+            parse_mode=ParseMode.HTML,
+            reply_markup=inline_releases_keyboard(releases),
+        )
 
     @dp.message(Command("status"))
     async def cmd_status(message: Message) -> None:
@@ -452,6 +497,93 @@ def setup_handlers(
                 "🏠 <b>Главное меню</b>\n\nВыберите действие:",
                 reply_markup=inline_main_menu(),
             )
+
+    @dp.callback_query(F.data.startswith("row:"))
+    async def cb_row_detail(callback: CallbackQuery) -> None:
+        # row:<row_number> → detail card as a NEW message (list stays intact)
+        try:
+            row_number = int(callback.data.split(":", 1)[1])
+        except ValueError:
+            await callback.answer("Ошибка")
+            return
+        ok, _ = await _load_data(monitor, bot, storage)
+        if not ok:
+            await callback.answer("Не удалось загрузить данные", show_alert=True)
+            return
+        row = monitor.get_row(row_number)
+        if not row:
+            await callback.answer("Строка не найдена (данные обновились)", show_alert=True)
+            return
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer(
+                format_row_detail(row),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=inline_detail_card(),
+            )
+
+    @dp.callback_query(F.data == "devs")
+    async def cb_devs(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not callback.message:
+            return
+        ok, err = await _load_data(monitor, bot, storage)
+        if not ok:
+            await safe_edit(callback.message, f"❌ {err}", reply_markup=inline_main_menu())
+            return
+        devs = monitor.developers_summary()
+        await safe_edit(
+            callback.message,
+            format_developers_list(devs),
+            reply_markup=inline_developers_keyboard(devs),
+        )
+
+    @dp.callback_query(F.data == "rels")
+    async def cb_rels(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not callback.message:
+            return
+        ok, err = await _load_data(monitor, bot, storage)
+        if not ok:
+            await safe_edit(callback.message, f"❌ {err}", reply_markup=inline_main_menu())
+            return
+        releases = monitor.releases_summary(limit=20)
+        await safe_edit(
+            callback.message,
+            format_releases_list(releases),
+            reply_markup=inline_releases_keyboard(releases),
+        )
+
+    @dp.callback_query(F.data.startswith("dev:"))
+    async def cb_dev_rows(callback: CallbackQuery) -> None:
+        name = callback.data.split(":", 1)[1]
+        await callback.answer("Загружаю…")
+        if not callback.message:
+            return
+        ok, _ = await _load_data(monitor, bot, storage)
+        if not ok:
+            return
+        rows = monitor.rows_by_developer(name)
+        await _render_dynamic(
+            callback.message, monitor, callback.message.chat.id,
+            f"Образы разработчика «{name}»", rows, 0, edit=True,
+        )
+
+    @dp.callback_query(F.data.startswith("rel:"))
+    async def cb_rel_rows(callback: CallbackQuery) -> None:
+        release = callback.data.split(":", 1)[1]
+        await callback.answer("Загружаю…")
+        if not callback.message:
+            return
+        ok, _ = await _load_data(monitor, bot, storage)
+        if not ok:
+            return
+        rows = monitor.rows_by_release(release)
+        await _render_dynamic(
+            callback.message, monitor, callback.message.chat.id,
+            f"Образы релиза «{release}»", rows, 0, edit=True,
+        )
 
     @dp.callback_query(F.data.startswith("pg:"))
     async def cb_page_view(callback: CallbackQuery) -> None:
@@ -682,6 +814,28 @@ def setup_handlers(
             await _serve_view(message, monitor, bot, storage, mapping[text])
         elif text == BTN_STATUS:
             await cmd_status_via_button(message)
+        elif text == BTN_DEVS:
+            ok, err = await _load_data(monitor, bot, storage)
+            if not ok:
+                await message.answer(f"❌ {err}")
+                return
+            devs = monitor.developers_summary()
+            await message.answer(
+                format_developers_list(devs),
+                parse_mode=ParseMode.HTML,
+                reply_markup=inline_developers_keyboard(devs),
+            )
+        elif text == BTN_RELEASES:
+            ok, err = await _load_data(monitor, bot, storage)
+            if not ok:
+                await message.answer(f"❌ {err}")
+                return
+            releases = monitor.releases_summary(limit=20)
+            await message.answer(
+                format_releases_list(releases),
+                parse_mode=ParseMode.HTML,
+                reply_markup=inline_releases_keyboard(releases),
+            )
         elif text == BTN_BY_DATE:
             await message.answer(
                 "📅 <b>Выборка по датам</b>\n\nВыберите, по какой дате фильтровать:",
@@ -727,27 +881,58 @@ def setup_handlers(
 
     @dp.message(F.text)
     async def text_input(message: Message) -> None:
-        if message.text and message.text.startswith("/"):
+        text = (message.text or "").strip()
+        if text.startswith("/"):
             await message.answer("Неизвестная команда. /help")
             return
 
         user_id = message.from_user.id if message.from_user else None
-        if not user_id or user_id not in _awaiting_custom_date:
-            return
 
-        parsed = parse_date_range(message.text or "")
-        if not parsed:
+        # 1) Waiting for a custom date range?
+        if user_id and user_id in _awaiting_custom_date:
+            parsed = parse_date_range(text)
+            if not parsed:
+                await message.answer(
+                    "❌ Неверный формат.\nПример: <code>15.06.2026</code> или "
+                    "<code>01.06.2026-15.06.2026</code>\n\n"
+                    "Или напишите текст ещё раз после выхода в /menu.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            date_field = _awaiting_custom_date.pop(user_id)
+            start, end = parsed
             await message.answer(
-                "❌ Неверный формат.\nПример: <code>15.06.2026</code> или "
-                "<code>01.06.2026-15.06.2026</code>",
+                "📋 <b>Результат проверки</b>\n\nЧто показать?",
                 parse_mode=ParseMode.HTML,
+                reply_markup=_custom_date_keyboard(date_field, start, end),
             )
             return
 
-        date_field = _awaiting_custom_date.pop(user_id)
-        start, end = parsed
-        await message.answer(
-            "📋 <b>Результат проверки</b>\n\nЧто показать?",
-            parse_mode=ParseMode.HTML,
-            reply_markup=_custom_date_keyboard(date_field, start, end),
+        # 2) A bare date? Treat as transfer-date filter.
+        parsed = parse_date_range(text)
+        if parsed:
+            start, end = parsed
+            ok, _ = await _load_data(monitor, bot, storage)
+            if ok:
+                await _render_date(message, monitor, "tr", start, end, "all", 0, edit=False)
+            return
+
+        # 3) Free-text search across the registry.
+        if len(text) < 2:
+            return
+        ok, err = await _load_data(monitor, bot, storage)
+        if not ok:
+            await message.answer(f"❌ {err}")
+            return
+        rows = monitor.find_rows(text)
+        if not rows:
+            await message.answer(
+                f"🔎 По запросу «{text}» ничего не найдено.\n"
+                "Поиск идёт по тегу, релизу, разработчику и статусу.\n"
+                "Попробуйте короче, например часть имени образа.",
+            )
+            return
+        await _render_dynamic(
+            message, monitor, message.chat.id,
+            f"Поиск: «{text}»", rows, 0, edit=False,
         )

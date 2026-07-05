@@ -204,17 +204,84 @@ class RegistryMonitor:
         query: str,
         rows: list[ImageRow] | None = None,
     ) -> list[ImageRow]:
+        """Multi-word AND search across all meaningful fields.
+
+        Every word of the query must occur somewhere in the row, so
+        "leadgen api" narrows instead of failing.
+        """
         source = rows if rows is not None else self._last_rows
-        q = query.strip().lower()
-        if not q:
+        words = [w for w in query.strip().lower().split() if w]
+        if not words:
             return []
+
+        def haystack(row: ImageRow) -> str:
+            return " ".join(
+                (
+                    row.tag,
+                    row.corrected_tag,
+                    row.final_tag,
+                    row.release,
+                    row.developer,
+                    row.status,
+                    row.transfer_date,
+                )
+            ).lower()
+
+        result = []
+        for row in source:
+            hs = haystack(row)
+            if all(w in hs for w in words):
+                result.append(row)
+        return result
+
+    def get_row(self, row_number: int) -> ImageRow | None:
+        for row in self._last_rows:
+            if row.row_number == row_number:
+                return row
+        return None
+
+    def last_rows_added(self, count: int = 10) -> list[ImageRow]:
+        """Newest rows (bottom of the sheet first)."""
+        return list(reversed(self._last_rows[-count:]))
+
+    @staticmethod
+    def _is_valid_developer(name: str) -> bool:
+        # Skip data-entry errors where a tag landed in the developer column.
+        return bool(name) and len(name) <= 25 and "/" not in name and ":" not in name
+
+    def developers_summary(self) -> list[tuple[str, int, int]]:
+        """[(developer, total, pending_count)] sorted by total desc."""
+        stats: dict[str, list[int]] = {}
+        for row in self._last_rows:
+            name = row.developer.strip()
+            if not self._is_valid_developer(name):
+                continue
+            item = stats.setdefault(name, [0, 0])
+            item[0] += 1
+            if row.is_pending_ops():
+                item[1] += 1
+        return sorted(
+            ((name, total, pending) for name, (total, pending) in stats.items()),
+            key=lambda x: (-x[1], x[0]),
+        )
+
+    def releases_summary(self, limit: int = 30) -> list[tuple[str, int]]:
+        """[(release, count)] most recent releases first (by last row number)."""
+        counts: dict[str, int] = {}
+        last_seen: dict[str, int] = {}
+        for row in self._last_rows:
+            release = row.release.strip()
+            if not release or len(release) > 40:
+                continue
+            counts[release] = counts.get(release, 0) + 1
+            last_seen[release] = row.row_number
+        ordered = sorted(counts, key=lambda r: -last_seen[r])
+        return [(r, counts[r]) for r in ordered[:limit]]
+
+    def rows_by_release(self, release: str) -> list[ImageRow]:
+        target = release.strip().lower()
         return [
-            row
-            for row in source
-            if q in row.tag.lower()
-            or q in row.corrected_tag.lower()
-            or q in row.final_tag.lower()
-            or q in row.release.lower()
+            row for row in self._last_rows if row.release.strip().lower() == target
         ]
 
     def stale_rows(

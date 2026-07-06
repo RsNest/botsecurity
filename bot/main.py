@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 PUBLIC_COMMANDS = [
     BotCommand(command="add", description="Добавить тег в реестр"),
     BotCommand(command="my", description="Мои образы"),
+    BotCommand(command="profile", description="Мой профиль разработчика"),
     BotCommand(command="pending", description="Ожидают передачи на проверку"),
     BotCommand(command="on_review", description="На проверке у ИБ"),
     BotCommand(command="passed", description="Прошли проверку"),
@@ -50,6 +51,7 @@ ADMIN_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand(command="sync", description="[админ] Синхронизация"),
     BotCommand(command="stats", description="[админ] Статистика бота"),
     BotCommand(command="users", description="[админ] Активность пользователей"),
+    BotCommand(command="setprofile", description="[админ] Профиль user_id"),
     BotCommand(command="broadcast", description="[админ] Рассылка"),
 ]
 

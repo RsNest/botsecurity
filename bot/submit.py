@@ -8,7 +8,7 @@ from datetime import date
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
-from aiogram.filters import BaseFilter, Command, StateFilter
+from aiogram.filters import BaseFilter, Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -177,6 +177,75 @@ def setup_submit_handlers(
             parse_mode=ParseMode.HTML,
         )
 
+    @dp.message(Command("profile"))
+    async def cmd_profile(message: Message, command: CommandObject) -> None:
+        if not message.from_user:
+            return
+        user = message.from_user
+        profile = storage.get_profile(user.id)
+        new_surname = (command.args or "").strip()
+
+        if new_surname:
+            if len(new_surname) < 2 or len(new_surname) > 25:
+                await message.answer("❌ Фамилия должна быть от 2 до 25 символов.")
+                return
+            old = profile["surname"] if profile else None
+            storage.set_profile(
+                user.id,
+                new_surname,
+                username=user.username or "",
+                full_name=user.full_name or "",
+            )
+            lines = [f"✅ Профиль обновлён: <b>{esc(new_surname)}</b>"]
+            if old and old != new_surname:
+                lines.append(f"Было: {esc(old)}")
+            lines.append(
+                "\nТеперь /my и личные уведомления — по этой фамилии.\n"
+                "Чтобы добавить тег <i>от имени другого</i> разработчика, "
+                "в /add нажмите «✏️ Другая фамилия» — профиль не изменится."
+            )
+            await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+            return
+
+        if not profile:
+            await message.answer(
+                "👤 Профиль не задан.\n\n"
+                "Он создаётся при первом /add или задайте вручную:\n"
+                "<code>/profile Фамилия</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await message.answer(
+            "👤 <b>Ваш профиль в боте</b>\n\n"
+            f"Фамилия: <b>{esc(profile['surname'])}</b>\n"
+            f"Telegram: {esc(user.full_name or '—')}"
+            + (f" (@{esc(user.username)})" if user.username else "")
+            + f"\nUser ID: <code>{user.id}</code>\n\n"
+            "Сменить фамилию:\n<code>/profile НоваяФамилия</code>\n\n"
+            "⚠️ Профиль влияет на /my и личные уведомления. "
+            "Если добавляете тег за коллегу — в /add выберите "
+            "«✏️ Другая фамилия», чтобы не перезаписать свой профиль.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    @dp.message(Command("setprofile"))
+    async def cmd_setprofile(message: Message, command: CommandObject) -> None:
+        if not message.from_user or not settings.is_admin(message.from_user.id):
+            await message.answer("⛔ Только для администратора.")
+            return
+        parts = (command.args or "").split(maxsplit=1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            await message.answer(
+                "Использование: /setprofile 145212489 Зуев"
+            )
+            return
+        uid, surname = int(parts[0]), parts[1].strip()
+        storage.set_profile(uid, surname)
+        await message.answer(
+            f"✅ Профиль user <code>{uid}</code> → <b>{esc(surname)}</b>",
+            parse_mode=ParseMode.HTML,
+        )
+
     @dp.message(Command("my"))
     @dp.message(F.text == BTN_MY)
     async def cmd_my(message: Message) -> None:
@@ -271,14 +340,15 @@ def setup_submit_handlers(
     ) -> None:
         profile = storage.get_profile(user.id) if user else None
         if profile:
-            await state.update_data(surname=profile["surname"])
+            await state.update_data(surname=profile["surname"], surname_override=False)
             await state.set_state(AddTagStates.transfer_date)
             await target.answer(
                 f"👤 Разработчик: <b>{esc(profile['surname'])}</b> "
                 "(из вашего профиля)\n\n"
                 f"📅 Дата передачи — сегодня ({_today_str()})?\n"
                 "Напишите другую дату (<code>DD.MM.YYYY</code>) или "
-                "нажмите кнопку ниже.",
+                "нажмите кнопку ниже.\n\n"
+                "<i>Добавляете за коллегу? Нажмите «✏️ Другая фамилия».</i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
@@ -286,6 +356,12 @@ def setup_submit_handlers(
                             InlineKeyboardButton(
                                 text=f"📅 Сегодня ({_today_str()})",
                                 callback_data="add:date:today",
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text="✏️ Другая фамилия",
+                                callback_data="add:change_surname",
                             )
                         ],
                         [
@@ -307,10 +383,29 @@ def setup_submit_handlers(
             reply_markup=_surname_keyboard(names),
         )
 
+    @dp.callback_query(F.data == "add:change_surname")
+    async def add_change_surname(callback: CallbackQuery, state: FSMContext) -> None:
+        await callback.answer()
+        await state.update_data(surname_override=True)
+        names = _developer_names(monitor)
+        await state.set_state(AddTagStates.surname)
+        if callback.message:
+            await safe_edit(
+                callback.message,
+                "👤 <b>Фамилия разработчика</b> (для этой записи, "
+                "ваш профиль не изменится):\n\n"
+                "Выберите из списка или напишите текстом.",
+                reply_markup=_surname_keyboard(names),
+            )
+
     @dp.callback_query(F.data.startswith("add:surname:"))
     async def add_surname_cb(callback: CallbackQuery, state: FSMContext) -> None:
         surname = callback.data.split(":", 2)[2]
         await callback.answer()
+        data = await state.get_data()
+        if not data.get("surname_override") and callback.from_user:
+            if not storage.get_profile(callback.from_user.id):
+                await state.update_data(surname_override=False)
         await state.update_data(surname=surname)
         await state.set_state(AddTagStates.transfer_date)
         if callback.message:
@@ -439,12 +534,13 @@ def setup_submit_handlers(
             return
 
         user = callback.from_user
-        storage.set_profile(
-            user.id,
-            data["surname"],
-            username=user.username or "",
-            full_name=user.full_name or "",
-        )
+        if not data.get("surname_override"):
+            storage.set_profile(
+                user.id,
+                data["surname"],
+                username=user.username or "",
+                full_name=user.full_name or "",
+            )
         for tag, row_number in zip(data["tags"], row_numbers, strict=True):
             storage.add_tag_author(tag, user.id)
             storage.set_row_author(row_number, user.id)

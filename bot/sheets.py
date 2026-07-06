@@ -10,7 +10,18 @@ import aiohttp
 import gspread
 from google.oauth2.service_account import Credentials
 
-from bot.config import COL_CHECK_DATE, COL_STATUS, DATA_START_ROW, settings
+from bot.config import (
+    COL_CHECK_DATE,
+    COL_CORRECTED_TAG,
+    COL_DATE,
+    COL_DEVELOPER,
+    COL_RELEASE,
+    COL_STATUS,
+    COL_TAG,
+    DATA_START_ROW,
+    STATUS_ON_REVIEW,
+    settings,
+)
 from bot.models import ImageRow
 
 logger = logging.getLogger(__name__)
@@ -148,6 +159,76 @@ class SheetsClient:
                     "values": [[check_date]],
                 })
         worksheet.batch_update(batch, value_input_option="USER_ENTERED")
+
+    async def append_registry_rows(
+        self,
+        entries: list[dict],
+    ) -> list[int]:
+        """Append new registry rows. Each entry: transfer_date, developer, tag, release."""
+        if not entries:
+            return []
+        if not self.can_write:
+            raise RuntimeError(
+                "Запись в таблицу недоступна: нет credentials.json."
+            )
+        return await asyncio.to_thread(self._append_registry_rows_sync, entries)
+
+    def _append_registry_rows_sync(self, entries: list[dict]) -> list[int]:
+        if self._gc is None:
+            creds = Credentials.from_service_account_file(
+                str(settings.google_credentials_path),
+                scopes=SCOPES,
+            )
+            self._gc = gspread.authorize(creds)
+        spreadsheet = self._gc.open_by_key(settings.spreadsheet_id)
+        worksheet = self._find_worksheet(spreadsheet)
+        existing = worksheet.get_all_values()
+        start_row = len(existing) + 1
+        rows = []
+        for entry in entries:
+            row = [""] * 10
+            row[COL_DATE] = entry["transfer_date"]
+            row[COL_DEVELOPER] = entry["developer"]
+            row[COL_TAG] = entry["tag"]
+            row[COL_RELEASE] = entry["release"]
+            rows.append(row)
+        worksheet.append_rows(rows, value_input_option="USER_ENTERED")
+        return list(range(start_row, start_row + len(entries)))
+
+    async def submit_corrected_tag(
+        self,
+        row_number: int,
+        corrected_tag: str,
+    ) -> None:
+        """Write corrected tag and reset status back to on-review."""
+        if not self.can_write:
+            raise RuntimeError(
+                "Запись в таблицу недоступна: нет credentials.json."
+            )
+        await asyncio.to_thread(
+            self._submit_corrected_tag_sync, row_number, corrected_tag
+        )
+
+    def _submit_corrected_tag_sync(self, row_number: int, corrected_tag: str) -> None:
+        if self._gc is None:
+            creds = Credentials.from_service_account_file(
+                str(settings.google_credentials_path),
+                scopes=SCOPES,
+            )
+            self._gc = gspread.authorize(creds)
+        spreadsheet = self._gc.open_by_key(settings.spreadsheet_id)
+        worksheet = self._find_worksheet(spreadsheet)
+        corrected_col = _col_letter(COL_CORRECTED_TAG)
+        status_col = _col_letter(COL_STATUS)
+        date_col = _col_letter(COL_CHECK_DATE)
+        worksheet.batch_update(
+            [
+                {"range": f"{corrected_col}{row_number}", "values": [[corrected_tag]]},
+                {"range": f"{status_col}{row_number}", "values": [[STATUS_ON_REVIEW]]},
+                {"range": f"{date_col}{row_number}", "values": [[""]]},
+            ],
+            value_input_option="USER_ENTERED",
+        )
 
     def _parse_rows(self, values: list[list[str]]) -> list[ImageRow]:
         result: list[ImageRow] = []

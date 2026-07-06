@@ -67,6 +67,33 @@ class Storage:
                     ON activity_log(at);
                 CREATE INDEX IF NOT EXISTS idx_activity_user
                     ON activity_log(user_id);
+
+                CREATE TABLE IF NOT EXISTS dev_profiles (
+                    user_id INTEGER PRIMARY KEY,
+                    surname TEXT NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    full_name TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS tag_authors (
+                    tag TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    added_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS row_authors (
+                    row_number INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    added_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS pending_fixes (
+                    user_id INTEGER NOT NULL,
+                    row_number INTEGER NOT NULL,
+                    notified_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, row_number)
+                );
                 """
             )
             self._migrate(conn)
@@ -320,6 +347,145 @@ class Storage:
             conn.execute(
                 "DELETE FROM activity_log WHERE at < datetime('now', ?)",
                 (f"-{keep_days} days",),
+            )
+
+    # --- Developer profiles & tag authorship ---------------------------------
+
+    def set_profile(
+        self,
+        user_id: int,
+        surname: str,
+        username: str = "",
+        full_name: str = "",
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO dev_profiles (user_id, surname, username, full_name, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    surname = excluded.surname,
+                    username = excluded.username,
+                    full_name = excluded.full_name,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, surname.strip(), username, full_name, _now_iso()),
+            )
+
+    def get_profile(self, user_id: int) -> dict | None:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT user_id, surname, username, full_name "
+                "FROM dev_profiles WHERE user_id = ?",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def all_profiles(self) -> list[dict]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT user_id, surname, username, full_name FROM dev_profiles"
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def add_tag_author(self, tag: str, user_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tag_authors (tag, user_id, added_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(tag) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    added_at = excluded.added_at
+                """,
+                (tag.strip(), user_id, _now_iso()),
+            )
+
+    def tag_author(self, tag: str) -> int | None:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT user_id FROM tag_authors WHERE tag = ?",
+                (tag.strip(),),
+            )
+            row = cur.fetchone()
+            return int(row["user_id"]) if row else None
+
+    def tags_by_author(self, user_id: int) -> list[str]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT tag FROM tag_authors WHERE user_id = ? ORDER BY added_at DESC",
+                (user_id,),
+            )
+            return [r["tag"] for r in cur.fetchall()]
+
+    def set_row_author(self, row_number: int, user_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO row_authors (row_number, user_id, added_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(row_number) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    added_at = excluded.added_at
+                """,
+                (row_number, user_id, _now_iso()),
+            )
+
+    def row_author(self, row_number: int) -> int | None:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT user_id FROM row_authors WHERE row_number = ?",
+                (row_number,),
+            )
+            row = cur.fetchone()
+            return int(row["user_id"]) if row else None
+
+    def user_ids_by_surname(self, surname: str) -> list[int]:
+        target = surname.strip().lower()
+        if not target:
+            return []
+        with self._connect() as conn:
+            cur = conn.execute("SELECT user_id, surname FROM dev_profiles")
+            return [
+                int(r["user_id"])
+                for r in cur.fetchall()
+                if target in (r["surname"] or "").lower()
+            ]
+
+    def set_pending_fix(self, user_id: int, row_number: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pending_fixes (user_id, row_number, notified_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id, row_number) DO UPDATE SET
+                    notified_at = excluded.notified_at
+                """,
+                (user_id, row_number, _now_iso()),
+            )
+
+    def get_pending_fixes(self, user_id: int) -> list[int]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT row_number FROM pending_fixes WHERE user_id = ? "
+                "ORDER BY notified_at DESC",
+                (user_id,),
+            )
+            return [int(r["row_number"]) for r in cur.fetchall()]
+
+    def clear_pending_fix(self, user_id: int, row_number: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM pending_fixes WHERE user_id = ? AND row_number = ?",
+                (user_id, row_number),
+            )
+
+    def clear_all_pending_fixes(self, user_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM pending_fixes WHERE user_id = ?",
+                (user_id,),
             )
 
     def last_scan(self) -> dict | None:

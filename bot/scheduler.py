@@ -12,9 +12,11 @@ from apscheduler.triggers.interval import IntervalTrigger
 from datetime import date, timedelta
 
 from bot.config import settings
-from bot.formatters import format_change, format_digest, format_reminder
+from bot.formatters import format_change, format_digest, format_personal_status_change, format_reminder
+from bot.keyboards import inline_fix_tag
 from bot.models import RowChange
 from bot.monitor import RegistryMonitor
+from bot.submit import resolve_developer_user_ids
 from bot.storage import Storage
 from bot.utils import safe_send
 
@@ -47,6 +49,22 @@ async def broadcast_changes(
         text = format_change(change)
         for chat_id in subscribers:
             await safe_send(bot, chat_id, text)
+            await asyncio.sleep(0.05)
+
+        personal = format_personal_status_change(change)
+        if not personal:
+            continue
+        dev_ids = resolve_developer_user_ids(storage, change.row)
+        if not dev_ids:
+            continue
+        kb = None
+        status = change.changed_fields.get("status")
+        if status and (status[1] or "").strip().lower() == "не прошло проверку":
+            kb = inline_fix_tag(change.row.row_number)
+            for uid in dev_ids:
+                storage.set_pending_fix(uid, change.row.row_number)
+        for uid in set(dev_ids):
+            await safe_send(bot, uid, personal, reply_markup=kb)
             await asyncio.sleep(0.05)
 
 

@@ -234,6 +234,16 @@ class RegistryMonitor:
                 result.append(row)
         return result
 
+    def find_duplicate_tag(self, tag: str) -> ImageRow | None:
+        target = tag.strip().lower()
+        if not target:
+            return None
+        for row in self._last_rows:
+            for value in (row.tag, row.corrected_tag, row.final_tag):
+                if value and value.strip().lower() == target:
+                    return row
+        return None
+
     def get_row(self, row_number: int) -> ImageRow | None:
         for row in self._last_rows:
             if row.row_number == row_number:

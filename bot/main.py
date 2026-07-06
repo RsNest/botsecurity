@@ -7,6 +7,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 
 from bot.config import settings
@@ -15,6 +16,7 @@ from bot.middleware import ActivityMiddleware
 from bot.monitor import RegistryMonitor
 from bot.scheduler import setup_scheduler
 from bot.storage import Storage
+from bot.submit import setup_submit_handlers
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,6 +26,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 PUBLIC_COMMANDS = [
+    BotCommand(command="add", description="Добавить тег в реестр"),
+    BotCommand(command="my", description="Мои образы"),
     BotCommand(command="pending", description="Ожидают передачи на проверку"),
     BotCommand(command="on_review", description="На проверке у ИБ"),
     BotCommand(command="passed", description="Прошли проверку"),
@@ -66,7 +70,7 @@ async def main() -> None:
         token=settings.telegram_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    dp = Dispatcher()
+    dp = Dispatcher(storage=MemoryStorage())
     storage = Storage()
     monitor = RegistryMonitor(storage=storage)
 
@@ -74,6 +78,7 @@ async def main() -> None:
     dp.message.middleware(activity)
     dp.callback_query.middleware(activity)
 
+    setup_submit_handlers(dp, bot, monitor, storage)
     setup_handlers(dp, bot, monitor, storage)
     scheduler = setup_scheduler(bot, monitor, storage)
     scheduler.start()

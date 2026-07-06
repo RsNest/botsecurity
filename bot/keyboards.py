@@ -4,6 +4,8 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardBu
 
 # --- Reply keyboard (нижнее меню) ---
 
+BTN_ADD = "➕ Добавить тег"
+BTN_MY = "📋 Мои образы"
 BTN_PENDING = "⏳ Ожидают"
 BTN_ON_REVIEW = "🔍 На проверке"
 BTN_PASSED = "✅ Прошли"
@@ -17,6 +19,8 @@ BTN_DEVS = "👥 Разработчики"
 BTN_RELEASES = "🏷 Релизы"
 
 REPLY_BUTTONS = {
+    BTN_ADD,
+    BTN_MY,
     BTN_PENDING,
     BTN_ON_REVIEW,
     BTN_PASSED,
@@ -34,6 +38,7 @@ REPLY_BUTTONS = {
 def main_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
+            [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_MY)],
             [KeyboardButton(text=BTN_PENDING), KeyboardButton(text=BTN_ON_REVIEW)],
             [KeyboardButton(text=BTN_PASSED), KeyboardButton(text=BTN_FAILED)],
             [KeyboardButton(text=BTN_DEVS), KeyboardButton(text=BTN_RELEASES)],
@@ -50,6 +55,10 @@ def main_reply_keyboard() -> ReplyKeyboardMarkup:
 def inline_main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(text=BTN_ADD, callback_data="act:add"),
+                InlineKeyboardButton(text=BTN_MY, callback_data="act:my"),
+            ],
             [
                 InlineKeyboardButton(text=BTN_PENDING, callback_data="act:pending"),
                 InlineKeyboardButton(text=BTN_ON_REVIEW, callback_data="act:on_review"),
@@ -216,6 +225,19 @@ def inline_report_confirm(token: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="❌ Отмена", callback_data=f"rep:cancel:{token}"
+                )
+            ],
+        ]
+    )
+
+
+def inline_fix_tag(row_number: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔧 Отправить исправленный тег",
+                    callback_data=f"fix:start:{row_number}",
                 )
             ],
         ]

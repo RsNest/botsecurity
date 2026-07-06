@@ -4,7 +4,7 @@ from datetime import datetime
 from math import ceil
 from zoneinfo import ZoneInfo
 
-from bot.config import FIELD_NAMES, settings
+from bot.config import FIELD_NAMES, STATUS_ON_REVIEW, settings
 from bot.models import ImageRow, RowChange, normalize_status
 from bot.utils import esc
 
@@ -347,6 +347,70 @@ def format_user_history(user_id: int, items: list[dict]) -> str:
     return "\n".join(parts)
 
 
+def format_add_preview(
+    *,
+    tags: list[str],
+    release: str,
+    surname: str,
+    transfer_date: str,
+) -> str:
+    tag_lines = "\n".join(f"• <code>{esc(t)}</code>" for t in tags)
+    return (
+        "➕ <b>Проверьте перед записью</b>\n\n"
+        f"👤 Разработчик: <b>{esc(surname)}</b>\n"
+        f"📅 Дата передачи: {esc(transfer_date)}\n"
+        f"🏷 Релиз: <b>{esc(release)}</b>\n\n"
+        f"Теги ({len(tags)}):\n{tag_lines}\n\n"
+        "Статус будет пустым — образ попадёт в реестр как новый."
+    )
+
+
+def format_my_rows(surname: str, rows: list[ImageRow]) -> str:
+    if not rows:
+        return (
+            f"📋 <b>Ваши образы</b> ({esc(surname)})\n\n"
+            "Пока ничего не найдено по вашей фамилии в реестре."
+        )
+    parts = [f"📋 <b>Ваши образы</b> ({esc(surname)}) · {len(rows)}", ""]
+    for row in rows[:20]:
+        parts.append(format_row_brief(row))
+        if row.corrected_tag:
+            parts.append(f"  🔧 исправленный: <code>{esc(row.corrected_tag)}</code>")
+    if len(rows) > 20:
+        parts.append(f"\n… и ещё {len(rows) - 20}")
+    parts.append("\nДобавить новый тег — /add")
+    return "\n".join(parts)
+
+
+def format_personal_status_change(change: RowChange) -> str | None:
+    """Personal notification text for status changes. None if not status-related."""
+    row = change.row
+    status = change.changed_fields.get("status")
+    if change.change_type == "updated" and status:
+        new_status = normalize_status(status[1])
+        if new_status == "на проверке":
+            return (
+                "🔍 <b>Ваш образ передан на проверку ИБ</b>\n\n"
+                + format_row_detail(row)
+            )
+        if new_status == "прошло проверку":
+            return (
+                "✅ <b>Ваш образ прошёл проверку ИБ</b>\n\n"
+                + format_row_detail(row)
+            )
+        if new_status == "не прошло проверку":
+            return (
+                "❌ <b>Ваш образ не прошёл проверку ИБ</b>\n\n"
+                + format_row_detail(row)
+                + "\n\nКогда пересоберёте образ — пришлите новый тег сюда "
+                "или нажмите кнопку ниже. Бот запишет его в «Исправленный тег» "
+                f"и вернёт статус «{STATUS_ON_REVIEW}»."
+            )
+    if change.change_type == "new":
+        return "🆕 <b>Ваш образ добавлен в реестр</b>\n\n" + format_row_detail(row)
+    return None
+
+
 def format_reminder(rows: list[ImageRow]) -> str:
     title = "🔔 Напоминание: образы ждут передачи на проверку"
     text, _, _ = format_rows_page(rows, title, page=0)
@@ -360,6 +424,11 @@ def format_help(is_subscribed: bool) -> str:
         "Публичный бот для мониторинга Google-таблицы с образами.\n\n"
         "🔎 <b>Поиск</b>: просто напишите текст в чат — например,\n"
         "<code>leadgen</code> или <code>Зуев api</code>\n\n"
+        "<b>Разработчикам:</b>\n"
+        "/add — добавить тег в реестр (дата, фамилия, тег, релиз)\n"
+        "/my — ваши образы и их статусы\n"
+        "После провала проверки — пришлите исправленный тег: бот запишет "
+        "его в таблицу и вернёт статус «на проверке»\n\n"
         "<b>Списки:</b>\n"
         "/pending — ждут передачи на проверку\n"
         "/on_review — на проверке у ИБ\n"
@@ -403,11 +472,18 @@ def format_welcome() -> str:
         "или не прошёл проверку ИБ\n"
         "• напоминать в рабочие дни про образы, которые ещё не переданы "
         "на проверку\n"
-        "• по понедельникам присылать дайджест за неделю\n\n"
+        "• по понедельникам присылать дайджест за неделю\n"
+        "• лично сообщать вам, когда <b>ваш</b> образ сменил статус\n\n"
+        "➕ <b>Разработчикам:</b> /add — добавить тег прямо из бота, "
+        "/my — ваши образы. Если проверка не прошла — пришлите "
+        "пересобранный тег, бот запишет его как исправленный и "
+        "вернёт образ на проверку.\n\n"
         "🔎 <b>Главная фишка — поиск:</b> просто напишите текст в чат.\n"
         "Например: <code>leadgen</code>, <code>Зуев api</code>, "
         "<code>15.06.2026</code> (покажу образы за дату).\n\n"
         "<b>Кнопки внизу экрана:</b>\n"
+        "➕ <b>Добавить тег</b> — записать образ в реестр\n"
+        "📋 <b>Мои образы</b> — только ваши теги и статусы\n"
         "⏳ <b>Ожидают</b> — образы без статуса, ещё не переданы ИБ\n"
         "🔍 <b>На проверке</b> — сейчас проверяются у ИБ\n"
         "✅ <b>Прошли</b> / ❌ <b>Не прошли</b> — результаты проверок\n"

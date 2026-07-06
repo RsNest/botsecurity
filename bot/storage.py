@@ -52,6 +52,21 @@ class Storage:
                     changes_count INTEGER NOT NULL,
                     error TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS activity_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    at TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    full_name TEXT NOT NULL DEFAULT '',
+                    kind TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_activity_at
+                    ON activity_log(at);
+                CREATE INDEX IF NOT EXISTS idx_activity_user
+                    ON activity_log(user_id);
                 """
             )
             self._migrate(conn)
@@ -200,6 +215,111 @@ class Storage:
                 VALUES (?, ?, ?, ?)
                 """,
                 (_now_iso(), row_count, changes_count, error),
+            )
+
+    # --- User activity -------------------------------------------------------
+
+    def log_activity(
+        self,
+        user_id: int,
+        username: str,
+        full_name: str,
+        kind: str,
+        action: str,
+        detail: str = "",
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO activity_log
+                    (at, user_id, username, full_name, kind, action, detail)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (_now_iso(), user_id, username, full_name, kind, action, detail[:200]),
+            )
+
+    def activity_overview(self, days: int = 7) -> dict:
+        """Aggregate stats for the admin: users, actions, per-user counts."""
+        since = f"-{days} days"
+        with self._connect() as conn:
+            total_users = conn.execute(
+                "SELECT COUNT(DISTINCT user_id) AS c FROM activity_log"
+            ).fetchone()["c"]
+            active = conn.execute(
+                "SELECT COUNT(DISTINCT user_id) AS c FROM activity_log "
+                "WHERE at >= datetime('now', ?)",
+                (since,),
+            ).fetchone()["c"]
+            actions_period = conn.execute(
+                "SELECT COUNT(*) AS c FROM activity_log "
+                "WHERE at >= datetime('now', ?)",
+                (since,),
+            ).fetchone()["c"]
+            top_users = conn.execute(
+                """
+                SELECT user_id, MAX(username) AS username,
+                       MAX(full_name) AS full_name,
+                       COUNT(*) AS cnt, MAX(at) AS last_at
+                FROM activity_log
+                WHERE at >= datetime('now', ?)
+                GROUP BY user_id
+                ORDER BY cnt DESC
+                LIMIT 10
+                """,
+                (since,),
+            ).fetchall()
+            top_actions = conn.execute(
+                """
+                SELECT action, COUNT(*) AS cnt
+                FROM activity_log
+                WHERE at >= datetime('now', ?)
+                GROUP BY action
+                ORDER BY cnt DESC
+                LIMIT 12
+                """,
+                (since,),
+            ).fetchall()
+        return {
+            "days": days,
+            "total_users": int(total_users),
+            "active_users": int(active),
+            "actions_period": int(actions_period),
+            "top_users": [dict(r) for r in top_users],
+            "top_actions": [dict(r) for r in top_actions],
+        }
+
+    def recent_activity(self, limit: int = 20) -> list[dict]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT at, user_id, username, full_name, kind, action, detail
+                FROM activity_log
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def user_activity(self, user_id: int, limit: int = 25) -> list[dict]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT at, action, detail
+                FROM activity_log
+                WHERE user_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (user_id, limit),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def prune_activity(self, keep_days: int = 90) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM activity_log WHERE at < datetime('now', ?)",
+                (f"-{keep_days} days",),
             )
 
     def last_scan(self) -> dict | None:

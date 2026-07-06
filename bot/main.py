@@ -11,6 +11,7 @@ from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefaul
 
 from bot.config import settings
 from bot.handlers import setup_handlers
+from bot.middleware import ActivityMiddleware
 from bot.monitor import RegistryMonitor
 from bot.scheduler import setup_scheduler
 from bot.storage import Storage
@@ -43,7 +44,8 @@ PUBLIC_COMMANDS = [
 
 ADMIN_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand(command="sync", description="[админ] Синхронизация"),
-    BotCommand(command="stats", description="[админ] Статистика"),
+    BotCommand(command="stats", description="[админ] Статистика бота"),
+    BotCommand(command="users", description="[админ] Активность пользователей"),
     BotCommand(command="broadcast", description="[админ] Рассылка"),
 ]
 
@@ -67,6 +69,10 @@ async def main() -> None:
     dp = Dispatcher()
     storage = Storage()
     monitor = RegistryMonitor(storage=storage)
+
+    activity = ActivityMiddleware(storage)
+    dp.message.middleware(activity)
+    dp.callback_query.middleware(activity)
 
     setup_handlers(dp, bot, monitor, storage)
     scheduler = setup_scheduler(bot, monitor, storage)

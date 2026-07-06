@@ -33,6 +33,8 @@ from bot.formatters import (
     format_row_detail,
     format_rows_page_numbered,
     format_status_summary,
+    format_user_history,
+    format_users_overview,
     format_welcome,
 )
 from bot.keyboards import (
@@ -476,6 +478,39 @@ def setup_handlers(
             if last["error"]:
                 lines.append(f"Ошибка: {last['error']}")
         await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+
+    @dp.message(Command("users"))
+    async def cmd_users(message: Message, command: CommandObject) -> None:
+        if not message.from_user or not settings.is_admin(message.from_user.id):
+            await message.answer("⛔ Команда только для администратора.")
+            return
+        try:
+            days = max(1, min(365, int((command.args or "7").strip())))
+        except ValueError:
+            days = 7
+        overview = storage.activity_overview(days)
+        recent = storage.recent_activity(limit=10)
+        await message.answer(
+            format_users_overview(overview, recent),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+
+    @dp.message(Command("user"))
+    async def cmd_user(message: Message, command: CommandObject) -> None:
+        if not message.from_user or not settings.is_admin(message.from_user.id):
+            await message.answer("⛔ Команда только для администратора.")
+            return
+        raw = (command.args or "").strip()
+        if not raw.isdigit():
+            await message.answer("Использование: /user 145212489\n(id можно взять из /users)")
+            return
+        items = storage.user_activity(int(raw))
+        await message.answer(
+            format_user_history(int(raw), items),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
 
     @dp.message(Command("broadcast"))
     async def cmd_broadcast(message: Message, command: CommandObject) -> None:

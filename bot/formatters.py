@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
 from math import ceil
+from zoneinfo import ZoneInfo
 
 from bot.config import FIELD_NAMES, settings
 from bot.models import ImageRow, RowChange, normalize_status
@@ -273,6 +275,78 @@ def format_status_summary(summary: dict[str, int], total: int, footer: str = "")
     return text
 
 
+def _fmt_local_time(iso: str) -> str:
+    try:
+        dt = datetime.fromisoformat(iso)
+        local = dt.astimezone(ZoneInfo(settings.timezone))
+        return local.strftime("%d.%m %H:%M")
+    except ValueError:
+        return iso[:16]
+
+
+def _user_label(row: dict) -> str:
+    name = row.get("full_name") or ""
+    username = row.get("username") or ""
+    label = esc(name) if name else f"id{row.get('user_id')}"
+    if username:
+        label += f" (@{esc(username)})"
+    return label
+
+
+def format_users_overview(overview: dict, recent: list[dict]) -> str:
+    days = overview["days"]
+    parts = [
+        "👥 <b>Активность пользователей</b>",
+        f"Всего пользователей за всё время: {overview['total_users']}",
+        f"Активных за {days} дн.: {overview['active_users']} "
+        f"({overview['actions_period']} действий)",
+        "",
+    ]
+
+    if overview["top_users"]:
+        parts.append(f"<b>Топ пользователей за {days} дн.:</b>")
+        for i, u in enumerate(overview["top_users"], 1):
+            parts.append(
+                f"{i}. {_user_label(u)} — {u['cnt']} действ., "
+                f"посл.: {_fmt_local_time(u['last_at'])}"
+            )
+        parts.append("")
+
+    if overview["top_actions"]:
+        parts.append(f"<b>Что запрашивают (за {days} дн.):</b>")
+        for a in overview["top_actions"]:
+            parts.append(f"• {esc(a['action'])} — {a['cnt']}")
+        parts.append("")
+
+    if recent:
+        parts.append("<b>Последние действия:</b>")
+        for r in recent:
+            line = (
+                f"{_fmt_local_time(r['at'])} · {_user_label(r)} · "
+                f"{esc(r['action'])}"
+            )
+            detail = (r.get("detail") or "").strip()
+            if detail and detail != r["action"]:
+                line += f" <i>{esc(detail[:40])}</i>"
+            parts.append(line)
+
+    parts.append("\nПериод: <code>/users 30</code> · история: <code>/user 123456</code>")
+    return "\n".join(parts)
+
+
+def format_user_history(user_id: int, items: list[dict]) -> str:
+    if not items:
+        return f"Действий пользователя <code>{user_id}</code> не найдено."
+    parts = [f"📜 <b>История пользователя</b> <code>{user_id}</code>", ""]
+    for r in items:
+        line = f"{_fmt_local_time(r['at'])} · {esc(r['action'])}"
+        detail = (r.get("detail") or "").strip()
+        if detail and detail != r["action"]:
+            line += f" <i>{esc(detail[:60])}</i>"
+        parts.append(line)
+    return "\n".join(parts)
+
+
 def format_reminder(rows: list[ImageRow]) -> str:
     title = "🔔 Напоминание: образы ждут передачи на проверку"
     text, _, _ = format_rows_page(rows, title, page=0)
@@ -316,13 +390,35 @@ def format_help(is_subscribed: bool) -> str:
 
 def format_welcome() -> str:
     return (
-        "👋 <b>Реестр образов ИБ</b>\n\n"
-        "Я слежу за Google-таблицей и присылаю:\n"
-        "• новые образы от разработчиков\n"
-        "• изменения статусов\n"
-        "• напоминания о непереданных образах\n\n"
-        "🔎 <b>Поиск</b>: просто напишите текст в чат\n"
-        "(например <code>leadgen</code> или <code>Зуев api</code>)\n\n"
-        "Вы подписаны на уведомления.\n"
-        "Кнопки ниже — быстрый доступ, /help — все команды."
+        "👋 <b>Привет! Я бот реестра образов ИБ.</b>\n\n"
+        "Я слежу за <a href=\""
+        + SHEET_URL
+        + "\">Google-таблицей</a>, куда разработчики добавляют "
+        "docker-образы для проверки безопасности. Помогаю не лазить в "
+        "таблицу руками: показываю статусы, ищу образы и сам присылаю "
+        "уведомления.\n\n"
+        "<b>Что я умею автоматически:</b>\n"
+        "• сообщать о новых образах и любых изменениях в реестре\n"
+        "• присылать отдельное уведомление, когда образ прошёл "
+        "или не прошёл проверку ИБ\n"
+        "• напоминать в рабочие дни про образы, которые ещё не переданы "
+        "на проверку\n"
+        "• по понедельникам присылать дайджест за неделю\n\n"
+        "🔎 <b>Главная фишка — поиск:</b> просто напишите текст в чат.\n"
+        "Например: <code>leadgen</code>, <code>Зуев api</code>, "
+        "<code>15.06.2026</code> (покажу образы за дату).\n\n"
+        "<b>Кнопки внизу экрана:</b>\n"
+        "⏳ <b>Ожидают</b> — образы без статуса, ещё не переданы ИБ\n"
+        "🔍 <b>На проверке</b> — сейчас проверяются у ИБ\n"
+        "✅ <b>Прошли</b> / ❌ <b>Не прошли</b> — результаты проверок\n"
+        "👥 <b>Разработчики</b> — образы по конкретному человеку\n"
+        "🏷 <b>Релизы</b> — образы по релизу\n"
+        "📊 <b>Статус</b> — общая сводка: сколько где\n"
+        "📅 <b>По датам</b> — выборка за период (прошли / не прошли)\n"
+        "📆 <b>Сегодня</b> — что добавили сегодня\n"
+        "🔄 <b>Обновить</b> — принудительно перечитать таблицу\n\n"
+        "В каждом списке нумерованные кнопки открывают карточку образа "
+        "со всеми полями, стрелки ◀️ ▶️ листают страницы.\n\n"
+        "✅ Вы подписаны на уведомления (отключить — /unsubscribe).\n"
+        "Все команды — /help"
     )

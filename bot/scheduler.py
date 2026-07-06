@@ -98,6 +98,7 @@ async def weekly_digest(
         logger.exception("Digest scan failed")
         return
 
+    storage.prune_activity(keep_days=90)
     rows = monitor.last_rows
     summary = monitor.status_summary(rows)
     week_ago = date.today() - timedelta(days=7)

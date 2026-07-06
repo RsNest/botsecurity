@@ -204,6 +204,24 @@ def inline_developers_keyboard(devs: list[tuple[str, int, int]]) -> InlineKeyboa
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def inline_report_confirm(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Проставить статусы в таблице",
+                    callback_data=f"rep:apply:{token}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Отмена", callback_data=f"rep:cancel:{token}"
+                )
+            ],
+        ]
+    )
+
+
 def inline_releases_keyboard(releases: list[tuple[str, int]]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for release, count in releases[:20]:

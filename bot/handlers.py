@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from collections import defaultdict
 from datetime import date, datetime
 
@@ -28,6 +29,7 @@ from bot.formatters import (
     format_developers_list,
     format_help,
     format_releases_list,
+    format_report_preview,
     format_row_detail,
     format_rows_page_numbered,
     format_status_summary,
@@ -55,10 +57,18 @@ from bot.keyboards import (
     inline_main_menu,
     inline_paginated_menu,
     inline_releases_keyboard,
+    inline_report_confirm,
     main_reply_keyboard,
 )
 from bot.models import ImageRow
 from bot.monitor import RegistryMonitor
+from bot.reports import (
+    MAX_ARCHIVE_SIZE,
+    ReportMatch,
+    ReportParseError,
+    extract_reports,
+    match_reports,
+)
 from bot.scheduler import broadcast_changes
 from bot.storage import Storage
 from bot.utils import safe_edit, safe_send
@@ -69,6 +79,8 @@ _last_force_refresh: dict[int, datetime] = defaultdict(lambda: datetime.min)
 _awaiting_custom_date: dict[int, str] = {}  # user_id -> date_field
 # Per-chat dynamic result cache for paginating ad-hoc queries (find/by_dev/stale)
 _dynamic_results: dict[int, tuple[str, list[ImageRow]]] = {}
+# token -> parsed report matches awaiting admin confirmation
+_pending_reports: dict[str, list[ReportMatch]] = {}
 
 # token -> (title, monitor method name)
 VIEWS: dict[str, tuple[str, str]] = {
@@ -481,6 +493,142 @@ def setup_handlers(
                 sent += 1
             await asyncio.sleep(0.05)
         await message.answer(f"✅ Отправлено {sent}/{len(subs)} подписчикам.")
+
+    # --- IB scan report archives -------------------------------------------
+
+    @dp.message(F.document)
+    async def handle_report_archive(message: Message) -> None:
+        doc = message.document
+        if not doc or not doc.file_name:
+            return
+        name = doc.file_name.lower()
+        if not (name.endswith(".7z") or name.endswith(".zip")):
+            await message.answer(
+                "📎 Я умею обрабатывать архивы отчётов ИБ (.7z или .zip).\n"
+                "Пришлите архив со сканами — я разберу его и предложу статусы."
+            )
+            return
+        if not message.from_user or not settings.is_admin(message.from_user.id):
+            await message.answer(
+                "⛔ Обработка отчётов ИБ доступна только администратору."
+            )
+            return
+        if doc.file_size and doc.file_size > MAX_ARCHIVE_SIZE:
+            await message.answer(
+                f"❌ Архив слишком большой ({doc.file_size // 1024 // 1024} МБ). "
+                "Telegram позволяет ботам скачивать файлы до 20 МБ."
+            )
+            return
+
+        wait = await message.answer("⏳ Скачиваю и разбираю архив…")
+        try:
+            file = await bot.get_file(doc.file_id)
+            buffer = await bot.download_file(file.file_path)
+            data = buffer.read()
+            reports = await asyncio.to_thread(extract_reports, data, doc.file_name)
+        except ReportParseError as exc:
+            await safe_edit(wait, f"❌ {exc}")
+            return
+        except Exception:
+            logger.exception("Failed to process report archive")
+            await safe_edit(wait, "❌ Не удалось обработать архив. Попробуйте ещё раз.")
+            return
+
+        ok, err = await _load_data(monitor, bot, storage, force=True)
+        if not ok:
+            await safe_edit(wait, f"❌ Архив разобран, но таблица недоступна:\n{err}")
+            return
+
+        matches = match_reports(reports, monitor.last_rows)
+        can_write = monitor.sheets.can_write
+        text = format_report_preview(matches, can_write)
+
+        applicable = [m for m in matches if m.row is not None]
+        kb = None
+        if can_write and applicable:
+            token = secrets.token_hex(4)
+            _pending_reports[token] = matches
+            # Keep only the few most recent pending reports
+            while len(_pending_reports) > 5:
+                _pending_reports.pop(next(iter(_pending_reports)))
+            kb = inline_report_confirm(token)
+        await safe_edit(wait, text, reply_markup=kb)
+
+    @dp.message(F.photo)
+    async def handle_photo(message: Message) -> None:
+        await message.answer(
+            "🖼 Скриншоты я пока не распознаю — по картинке легко ошибиться "
+            "со статусом.\n\nПришлите архив отчёта ИБ (.7z или .zip) — "
+            "я разберу его точно и сам предложу статусы для таблицы."
+        )
+
+    @dp.callback_query(F.data.startswith("rep:"))
+    async def cb_report(callback: CallbackQuery) -> None:
+        parts = callback.data.split(":")
+        if len(parts) != 3:
+            await callback.answer("Ошибка")
+            return
+        action, token = parts[1], parts[2]
+
+        if not callback.from_user or not settings.is_admin(callback.from_user.id):
+            await callback.answer("Только для администратора", show_alert=True)
+            return
+
+        matches = _pending_reports.get(token)
+        if action == "cancel":
+            _pending_reports.pop(token, None)
+            await callback.answer("Отменено")
+            if callback.message:
+                await safe_edit(
+                    callback.message,
+                    "❌ Проставление статусов отменено. Таблица не изменена.",
+                )
+            return
+
+        if matches is None:
+            await callback.answer(
+                "Этот отчёт устарел, пришлите архив ещё раз.", show_alert=True
+            )
+            return
+
+        await callback.answer("Записываю…")
+        if callback.message:
+            await safe_edit(callback.message, "⏳ Проставляю статусы в таблице…")
+
+        today_str = date.today().strftime("%d.%m.%Y")
+        updates = []
+        for m in matches:
+            if m.row is None:
+                continue
+            check_date = today_str if not m.row.check_date else ""
+            updates.append((m.row.row_number, m.report.verdict_status, check_date))
+
+        try:
+            await monitor.sheets.update_statuses(updates)
+        except Exception as exc:
+            logger.exception("Failed to write statuses to sheet")
+            if callback.message:
+                await safe_edit(
+                    callback.message,
+                    f"❌ Не удалось записать в таблицу:\n<code>{exc}</code>\n\n"
+                    "Проверьте, что сервисный аккаунт имеет права редактора.",
+                    reply_markup=inline_report_confirm(token),
+                )
+            return
+
+        _pending_reports.pop(token, None)
+        failed_count = sum(1 for m in matches if m.row and not m.report.passed)
+        passed_count = sum(1 for m in matches if m.row and m.report.passed)
+        if callback.message:
+            await safe_edit(
+                callback.message,
+                "✅ <b>Статусы проставлены в таблице</b>\n\n"
+                f"✅ Прошло проверку: {passed_count}\n"
+                f"❌ Не прошло проверку: {failed_count}\n"
+                f"Всего обновлено строк: {len(updates)}",
+            )
+        # Refresh the cache and notify subscribers through the usual diff flow.
+        await _load_data(monitor, bot, storage, force=True, notify_changes=True)
 
     # --- Callbacks ---
 

@@ -10,15 +10,25 @@ import aiohttp
 import gspread
 from google.oauth2.service_account import Credentials
 
-from bot.config import DATA_START_ROW, settings
+from bot.config import COL_CHECK_DATE, COL_STATUS, DATA_START_ROW, settings
 from bot.models import ImageRow
 
 logger = logging.getLogger(__name__)
 
 SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive.readonly",
 ]
+
+
+def _col_letter(index: int) -> str:
+    """0-based column index -> A1 letter."""
+    letters = ""
+    index += 1
+    while index:
+        index, rem = divmod(index - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
 
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 2
@@ -92,6 +102,52 @@ class SheetsClient:
         reader = csv.reader(io.StringIO(content))
         rows = list(reader)
         return self._parse_rows(rows)
+
+    @property
+    def can_write(self) -> bool:
+        return settings.google_credentials_path.exists()
+
+    async def update_statuses(
+        self,
+        updates: list[tuple[int, str, str]],
+    ) -> None:
+        """Write (row_number, status, check_date) to the sheet.
+
+        Requires a service account with Editor access to the spreadsheet.
+        """
+        if not updates:
+            return
+        if not self.can_write:
+            raise RuntimeError(
+                "Запись в таблицу недоступна: нет credentials.json. "
+                "Добавьте сервисный аккаунт с правами редактора."
+            )
+        await asyncio.to_thread(self._update_statuses_sync, updates)
+
+    def _update_statuses_sync(self, updates: list[tuple[int, str, str]]) -> None:
+        if self._gc is None:
+            creds = Credentials.from_service_account_file(
+                str(settings.google_credentials_path),
+                scopes=SCOPES,
+            )
+            self._gc = gspread.authorize(creds)
+        spreadsheet = self._gc.open_by_key(settings.spreadsheet_id)
+        worksheet = self._find_worksheet(spreadsheet)
+
+        status_col = _col_letter(COL_STATUS)
+        date_col = _col_letter(COL_CHECK_DATE)
+        batch = []
+        for row_number, status, check_date in updates:
+            batch.append({
+                "range": f"{status_col}{row_number}",
+                "values": [[status]],
+            })
+            if check_date:
+                batch.append({
+                    "range": f"{date_col}{row_number}",
+                    "values": [[check_date]],
+                })
+        worksheet.batch_update(batch, value_input_option="USER_ENTERED")
 
     def _parse_rows(self, values: list[list[str]]) -> list[ImageRow]:
         result: list[ImageRow] = []

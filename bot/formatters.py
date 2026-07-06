@@ -202,6 +202,59 @@ def format_digest(summary: dict[str, int], total: int, new_week: int, stale: int
     )
 
 
+def format_report_preview(matches, can_write: bool) -> str:
+    """Preview of parsed IB scan reports and their proposed verdicts."""
+    failed = [m for m in matches if not m.report.passed]
+    passed = [m for m in matches if m.report.passed]
+    unmatched = [m for m in matches if m.row is None]
+
+    parts = [
+        "🛡 <b>Отчёт сканирования ИБ</b>",
+        f"Образов в отчёте: {len(matches)} · "
+        f"✅ прошло: {len(passed)} · ❌ не прошло: {len(failed)}",
+        "",
+    ]
+
+    def line(m) -> str:
+        r = m.report
+        icon = "✅" if r.passed else "❌"
+        counts = []
+        if r.critical:
+            counts.append(f"crit {r.critical}")
+        if r.high:
+            counts.append(f"high {r.high}")
+        suffix = f" ({', '.join(counts)})" if counts else ""
+        row_ref = f" → стр. {m.row.row_number}" if m.row else " → ⚠️ не найден в таблице"
+        return f"{icon} <code>{esc(r.short_name)}</code>{suffix}{row_ref}"
+
+    if failed:
+        parts.append("<b>Не прошли проверку:</b>")
+        parts.extend(line(m) for m in failed)
+        parts.append("")
+    if passed:
+        parts.append("<b>Прошли проверку:</b>")
+        parts.extend(line(m) for m in passed)
+        parts.append("")
+    if unmatched:
+        parts.append(
+            f"⚠️ Не сопоставлено с таблицей: {len(unmatched)} "
+            "(статус для них проставлен не будет)."
+        )
+        parts.append("")
+
+    applicable = sum(1 for m in matches if m.row is not None)
+    if not can_write:
+        parts.append(
+            "🔒 <b>Запись в таблицу недоступна</b> — нет credentials.json "
+            "с правами редактора. Могу только показать вердикты."
+        )
+    elif applicable:
+        parts.append(
+            f"Нажмите кнопку, чтобы проставить статусы в таблице ({applicable} строк)."
+        )
+    return "\n".join(parts)
+
+
 def format_status_summary(summary: dict[str, int], total: int, footer: str = "") -> str:
     text = (
         "<b>Сводка по реестру образов ИБ</b>\n\n"
@@ -252,6 +305,10 @@ def format_help(is_subscribed: bool) -> str:
         "<b>Подписка:</b>\n"
         "/subscribe — подписаться на уведомления\n"
         "/unsubscribe — отписаться\n\n"
+        "🛡 <b>Отчёты ИБ</b> (для администратора):\n"
+        "пришлите архив сканирования (.7z / .zip) — бот разберёт его, "
+        "определит вердикты (high/critical → не прошло) и проставит "
+        "статусы в таблице.\n\n"
         f"{sub_state}\n"
         f"{_SHEET_LINK}"
     )

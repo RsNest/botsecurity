@@ -53,7 +53,7 @@ class Settings:
             telegram_token=token,
             admin_ids=admin_ids,
             spreadsheet_id=os.getenv(
-                "SPREADSHEET_ID", "1nRDstaHXnZ2Jf9IvgsAAvM8anro9JpjB"
+                "SPREADSHEET_ID", "1l-FSeC1mfIXqX-bvoKdfRV5txF0TDQ5aD-8GD8Ey-sw"
             ),
             sheet_gid=os.getenv("SHEET_GID", "684739217"),
             google_credentials_path=creds_path,

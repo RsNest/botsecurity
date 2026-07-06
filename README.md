@@ -1,6 +1,6 @@
 # botsecurity — Telegram-бот реестра образов ИБ
 
-Публичный Telegram-бот для мониторинга [Google-таблицы](https://docs.google.com/spreadsheets/d/1nRDstaHXnZ2Jf9IvgsAAvM8anro9JpjB/edit) с образами для проверки ИБ.
+Публичный Telegram-бот для мониторинга [Google-таблицы](https://docs.google.com/spreadsheets/d/1l-FSeC1mfIXqX-bvoKdfRV5txF0TDQ5aD-8GD8Ey-sw/edit) с образами для проверки ИБ.
 
 ## Возможности
 
@@ -85,7 +85,7 @@ docker compose logs -f
 ```env
 TELEGRAM_TOKEN=...           # от @BotFather
 ADMIN_IDS=145212489          # ваш Telegram user id
-SPREADSHEET_ID=1nRDstaHXnZ2Jf9IvgsAAvM8anro9JpjB
+SPREADSHEET_ID=1l-FSeC1mfIXqX-bvoKdfRV5txF0TDQ5aD-8GD8Ey-sw
 SHEET_GID=684739217
 GOOGLE_CREDENTIALS_PATH=credentials.json
 POLL_INTERVAL_MINUTES=60

@@ -4,7 +4,7 @@ from datetime import datetime
 from math import ceil
 from zoneinfo import ZoneInfo
 
-from bot.config import FIELD_NAMES, STATUS_ON_REVIEW, settings
+from bot.config import FIELD_NAMES, STATUS_NOT_TRANSFERRED, settings
 from bot.models import ImageRow, RowChange, normalize_status
 from bot.utils import esc
 
@@ -404,7 +404,7 @@ def format_personal_status_change(change: RowChange) -> str | None:
                 + format_row_detail(row)
                 + "\n\nКогда пересоберёте образ — пришлите новый тег сюда "
                 "или нажмите кнопку ниже. Бот запишет его в «Исправленный тег» "
-                f"и вернёт статус «{STATUS_ON_REVIEW}»."
+                f"и вернёт статус «{STATUS_NOT_TRANSFERRED}»."
             )
     if change.change_type == "new":
         return "🆕 <b>Ваш образ добавлен в реестр</b>\n\n" + format_row_detail(row)
@@ -428,7 +428,7 @@ def format_help(is_subscribed: bool) -> str:
         "/add — добавить тег в реестр (дата, фамилия, тег, релиз)\n"
         "/my — ваши образы и их статусы\n"
         "После провала проверки — пришлите исправленный тег: бот запишет "
-        "его в таблицу и вернёт статус «на проверке»\n\n"
+        "его в таблицу и вернёт статус «не передано»\n\n"
         "<b>Списки:</b>\n"
         "/pending — ждут передачи на проверку\n"
         "/on_review — на проверке у ИБ\n"
@@ -477,7 +477,7 @@ def format_welcome() -> str:
         "➕ <b>Разработчикам:</b> /add — добавить тег прямо из бота, "
         "/my — ваши образы. Если проверка не прошла — пришлите "
         "пересобранный тег, бот запишет его как исправленный и "
-        "вернёт образ на проверку.\n\n"
+        "вернёт образ на повторную передачу (статус «не передано»).\n\n"
         "🔎 <b>Главная фишка — поиск:</b> просто напишите текст в чат.\n"
         "Например: <code>leadgen</code>, <code>Зуев api</code>, "
         "<code>15.06.2026</code> (покажу образы за дату).\n\n"

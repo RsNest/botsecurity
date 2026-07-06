@@ -19,7 +19,7 @@ from bot.config import (
     COL_STATUS,
     COL_TAG,
     DATA_START_ROW,
-    STATUS_ON_REVIEW,
+    STATUS_NOT_TRANSFERRED,
     settings,
 )
 from bot.models import ImageRow
@@ -200,7 +200,7 @@ class SheetsClient:
         row_number: int,
         corrected_tag: str,
     ) -> None:
-        """Write corrected tag and reset status back to on-review."""
+        """Write corrected tag and reset status to not-transferred."""
         if not self.can_write:
             raise RuntimeError(
                 "Запись в таблицу недоступна: нет credentials.json."
@@ -224,7 +224,7 @@ class SheetsClient:
         worksheet.batch_update(
             [
                 {"range": f"{corrected_col}{row_number}", "values": [[corrected_tag]]},
-                {"range": f"{status_col}{row_number}", "values": [[STATUS_ON_REVIEW]]},
+                {"range": f"{status_col}{row_number}", "values": [[STATUS_NOT_TRANSFERRED]]},
                 {"range": f"{date_col}{row_number}", "values": [[""]]},
             ],
             value_input_option="USER_ENTERED",

@@ -18,7 +18,7 @@ from aiogram.types import (
     Message,
 )
 
-from bot.config import STATUS_ON_REVIEW, settings
+from bot.config import STATUS_NOT_TRANSFERRED, settings
 from bot.dates import parse_flexible_date
 from bot.formatters import format_add_preview, format_my_rows, format_row_detail
 from bot.keyboards import BTN_ADD, BTN_MY, main_reply_keyboard
@@ -478,6 +478,12 @@ def setup_submit_handlers(
                 await safe_edit(callback.message, "Строка не найдена.")
             return
         if corrected:
+            err = _corrected_tag_error(row, corrected)
+            if err:
+                await state.clear()
+                if callback.message:
+                    await safe_edit(callback.message, err)
+                return
             await state.set_state(FixTagStates.confirm)
             await state.update_data(row_number=row_number, corrected_tag=corrected)
             if callback.message:
@@ -487,7 +493,7 @@ def setup_submit_handlers(
                     f"Строка {row.row_number}\n"
                     f"Было: <code>{esc(row.tag)}</code>\n"
                     f"Исправленный тег: <code>{esc(corrected)}</code>\n\n"
-                    f"Статус → «{STATUS_ON_REVIEW}»",
+                    f"Статус → «{STATUS_NOT_TRANSFERRED}»",
                     reply_markup=_confirm_keyboard("fix"),
                 )
             return
@@ -553,6 +559,10 @@ def setup_submit_handlers(
                 "Исправленный тег можно добавить только после провала."
             )
             return
+        err = _corrected_tag_error(row, tag)
+        if err:
+            await message.answer(err)
+            return
         await state.update_data(corrected_tag=tag)
         await state.set_state(FixTagStates.confirm)
         await message.answer(
@@ -560,8 +570,8 @@ def setup_submit_handlers(
             f"Строка {row.row_number}\n"
             f"Было: <code>{esc(row.tag)}</code>\n"
             f"Исправленный тег: <code>{esc(tag)}</code>\n\n"
-            f"Статус будет сброшен на «{STATUS_ON_REVIEW}» — образ снова "
-            "отправится на проверку ИБ.\n"
+            f"Статус будет сброшен на «{STATUS_NOT_TRANSFERRED}» — образ "
+            "снова нужно передать на проверку ИБ.\n"
             "Дата проверки будет очищена.",
             parse_mode=ParseMode.HTML,
             reply_markup=_confirm_keyboard("fix"),
@@ -575,6 +585,15 @@ def setup_submit_handlers(
         data = await state.get_data()
         row_number = data["row_number"]
         corrected = data["corrected_tag"]
+        row = monitor.get_row(row_number)
+        if not row:
+            await state.clear()
+            await safe_edit(callback.message, "Строка не найдена.")
+            return
+        err = _corrected_tag_error(row, corrected)
+        if err:
+            await safe_edit(callback.message, err)
+            return
         await callback.answer("Записываю…")
         await safe_edit(callback.message, "⏳ Обновляю строку…")
         try:
@@ -591,13 +610,13 @@ def setup_submit_handlers(
             "✅ <b>Исправленный тег записан</b>\n\n"
             f"Строка {row_number}\n"
             f"<code>{esc(corrected)}</code>\n\n"
-            f"Статус: <b>{STATUS_ON_REVIEW}</b> — образ снова на проверке у ИБ.",
+            f"Статус: <b>{STATUS_NOT_TRANSFERRED}</b> — образ снова ждёт передачи на проверку.",
         )
         await _notify_admins(
             bot,
             f"🔧 <b>Исправленный тег</b> (@{esc(callback.from_user.username or '—')})\n"
             f"Стр. {row_number}: <code>{esc(corrected)}</code>\n"
-            f"Статус → {STATUS_ON_REVIEW}",
+            f"Статус → {STATUS_NOT_TRANSFERRED}",
         )
         await _ensure_fresh(monitor, force=True)
 
@@ -630,6 +649,10 @@ def setup_submit_handlers(
             return
         if len(rows) == 1:
             row = rows[0]
+            err = _corrected_tag_error(row, text)
+            if err:
+                await message.answer(err)
+                return
             await state.set_state(FixTagStates.confirm)
             await state.update_data(row_number=row.row_number, corrected_tag=text)
             await message.answer(
@@ -637,7 +660,7 @@ def setup_submit_handlers(
                 f"Строка {row.row_number}: <code>{esc(row.tag)}</code>\n"
                 f"Новый тег: <code>{esc(text)}</code>\n\n"
                 f"Записать в «Исправленный тег» и вернуть статус "
-                f"«{STATUS_ON_REVIEW}»?",
+                f"«{STATUS_NOT_TRANSFERRED}»?",
                 parse_mode=ParseMode.HTML,
                 reply_markup=_confirm_keyboard("fix"),
             )
@@ -648,6 +671,17 @@ def setup_submit_handlers(
             "🔧 У вас несколько образов с провалом. Для какого этот тег?",
             reply_markup=_fix_pick_keyboard(rows),
         )
+
+
+def _corrected_tag_error(row: ImageRow, corrected: str) -> str | None:
+    """Return an error message if the corrected tag must be rejected."""
+    new = corrected.strip()
+    if new.lower() == (row.tag or "").strip().lower():
+        return (
+            "❌ Исправленный тег совпадает с исходным.\n"
+            "Нужен другой образ — пересобранная версия с новым тегом."
+        )
+    return None
 
 
 def _developer_names(monitor: RegistryMonitor) -> list[str]:

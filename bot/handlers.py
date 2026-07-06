@@ -69,6 +69,7 @@ from bot.reports import (
     ReportMatch,
     ReportParseError,
     extract_reports,
+    is_low_confidence,
     match_reports,
 )
 from bot.scheduler import broadcast_changes
@@ -632,11 +633,24 @@ def setup_handlers(
 
         today_str = date.today().strftime("%d.%m.%Y")
         updates = []
+        skipped = 0
         for m in matches:
             if m.row is None:
                 continue
+            if is_low_confidence(m):
+                skipped += 1
+                continue
             check_date = today_str if not m.row.check_date else ""
             updates.append((m.row.row_number, m.report.verdict_status, check_date))
+
+        if not updates:
+            await safe_edit(
+                callback.message,
+                "❌ Нет строк для безопасного применения "
+                "(все сопоставления сомнительные или не найдены).",
+                reply_markup=inline_report_confirm(token),
+            )
+            return
 
         try:
             await monitor.sheets.update_statuses(updates)
@@ -652,16 +666,24 @@ def setup_handlers(
             return
 
         _pending_reports.pop(token, None)
-        failed_count = sum(1 for m in matches if m.row and not m.report.passed)
-        passed_count = sum(1 for m in matches if m.row and m.report.passed)
+        applied = [
+            m for m in matches
+            if m.row and not is_low_confidence(m)
+        ]
+        failed_count = sum(1 for m in applied if not m.report.passed)
+        passed_count = sum(1 for m in applied if m.report.passed)
         if callback.message:
-            await safe_edit(
-                callback.message,
-                "✅ <b>Статусы проставлены в таблице</b>\n\n"
-                f"✅ Прошло проверку: {passed_count}\n"
-                f"❌ Не прошло проверку: {failed_count}\n"
+            lines = [
+                "✅ <b>Статусы проставлены в таблице</b>",
+                f"✅ Прошло проверку: {passed_count}",
+                f"❌ Не прошло проверку: {failed_count}",
                 f"Всего обновлено строк: {len(updates)}",
-            )
+            ]
+            if skipped:
+                lines.append(
+                    f"⚠️ Пропущено (сомнительное сопоставление): {skipped}"
+                )
+            await safe_edit(callback.message, "\n".join(lines))
         # Refresh the cache and notify subscribers through the usual diff flow.
         await _load_data(monitor, bot, storage, force=True, notify_changes=True)
 

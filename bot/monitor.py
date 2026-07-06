@@ -75,6 +75,10 @@ class RegistryMonitor:
             removed = [c.row.row_number for c in changes if c.change_type == "removed"]
             self.storage.delete_snapshots(removed)
 
+            pruned = self.storage.prune_pending_fixes(rows)
+            if pruned:
+                logger.info("Pruned %s stale pending-fix flags", pruned)
+
             if bootstrap:
                 changes = []
                 logger.info(
@@ -190,9 +194,15 @@ class RegistryMonitor:
         self,
         developer_query: str,
         rows: list[ImageRow] | None = None,
+        *,
+        exact: bool = False,
     ) -> list[ImageRow]:
         source = rows if rows is not None else self._last_rows
         query = developer_query.strip().lower()
+        if exact:
+            return [
+                row for row in source if row.developer.strip().lower() == query
+            ]
         return [
             row
             for row in source

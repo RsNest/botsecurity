@@ -450,8 +450,22 @@ class Storage:
             return [
                 int(r["user_id"])
                 for r in cur.fetchall()
-                if target in (r["surname"] or "").lower()
+                if (r["surname"] or "").strip().lower() == target
             ]
+
+    def prune_pending_fixes(self, rows: list) -> int:
+        """Drop pending-fix flags for rows that are no longer failed."""
+        failed = {r.row_number for r in rows if r.is_failed()}
+        with self._connect() as conn:
+            if failed:
+                placeholders = ",".join("?" * len(failed))
+                cur = conn.execute(
+                    f"DELETE FROM pending_fixes WHERE row_number NOT IN ({placeholders})",
+                    list(failed),
+                )
+            else:
+                cur = conn.execute("DELETE FROM pending_fixes")
+            return cur.rowcount
 
     def set_pending_fix(self, user_id: int, row_number: int) -> None:
         with self._connect() as conn:

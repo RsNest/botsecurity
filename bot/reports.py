@@ -57,6 +57,10 @@ class ScanReport:
         return "Прошло проверку" if self.passed else "Не прошло проверку"
 
 
+# Matches below this score need manual review before applying statuses.
+LOW_CONFIDENCE_THRESHOLD = 1.15
+
+
 @dataclass
 class ReportMatch:
     report: ScanReport
@@ -244,3 +248,8 @@ def match_reports(
         else:
             result.append(ReportMatch(report=report, row=None))
     return result
+
+
+def is_low_confidence(match: ReportMatch) -> bool:
+    """True when sheet row mapping is uncertain and should not be auto-applied."""
+    return match.row is not None and match.score < LOW_CONFIDENCE_THRESHOLD

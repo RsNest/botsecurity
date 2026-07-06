@@ -262,7 +262,7 @@ def setup_submit_handlers(
         if not ok:
             await message.answer(f"❌ {err}")
             return
-        rows = monitor.rows_by_developer(profile["surname"])
+        rows = monitor.rows_by_developer(profile["surname"], exact=True)
         await message.answer(
             format_my_rows(profile["surname"], rows),
             parse_mode=ParseMode.HTML,

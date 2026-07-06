@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from bot.config import FIELD_NAMES, STATUS_NOT_TRANSFERRED, settings
 from bot.models import ImageRow, RowChange, normalize_status
+from bot.reports import LOW_CONFIDENCE_THRESHOLD, is_low_confidence
 from bot.utils import esc
 
 SHEET_URL = (
@@ -209,6 +210,7 @@ def format_report_preview(matches, can_write: bool) -> str:
     failed = [m for m in matches if not m.report.passed]
     passed = [m for m in matches if m.report.passed]
     unmatched = [m for m in matches if m.row is None]
+    uncertain = [m for m in matches if is_low_confidence(m)]
 
     parts = [
         "🛡 <b>Отчёт сканирования ИБ</b>",
@@ -227,6 +229,8 @@ def format_report_preview(matches, can_write: bool) -> str:
             counts.append(f"high {r.high}")
         suffix = f" ({', '.join(counts)})" if counts else ""
         row_ref = f" → стр. {m.row.row_number}" if m.row else " → ⚠️ не найден в таблице"
+        if m.row and is_low_confidence(m):
+            row_ref += " ⚠️ проверьте сопоставление"
         return f"{icon} <code>{esc(r.short_name)}</code>{suffix}{row_ref}"
 
     if failed:
@@ -243,8 +247,17 @@ def format_report_preview(matches, can_write: bool) -> str:
             "(статус для них проставлен не будет)."
         )
         parts.append("")
+    if uncertain:
+        parts.append(
+            f"⚠️ Сомнительное сопоставление: {len(uncertain)} "
+            f"(score &lt; {LOW_CONFIDENCE_THRESHOLD}) — при применении "
+            "эти строки будут пропущены, проверьте вручную."
+        )
+        parts.append("")
 
-    applicable = sum(1 for m in matches if m.row is not None)
+    applicable = sum(
+        1 for m in matches if m.row is not None and not is_low_confidence(m)
+    )
     if not can_write:
         parts.append(
             "🔒 <b>Запись в таблицу недоступна</b> — нет credentials.json "

@@ -46,16 +46,19 @@ async def broadcast_changes(
         return
 
     for change in changes:
+        personal = format_personal_status_change(change)
+        dev_ids: set[int] = set()
+        if personal:
+            dev_ids = set(resolve_developer_user_ids(storage, change.row))
+
         text = format_change(change)
         for chat_id in subscribers:
+            if chat_id in dev_ids:
+                continue
             await safe_send(bot, chat_id, text)
             await asyncio.sleep(0.05)
 
-        personal = format_personal_status_change(change)
-        if not personal:
-            continue
-        dev_ids = resolve_developer_user_ids(storage, change.row)
-        if not dev_ids:
+        if not personal or not dev_ids:
             continue
         kb = None
         status = change.changed_fields.get("status")
@@ -63,7 +66,7 @@ async def broadcast_changes(
             kb = inline_fix_tag(change.row.row_number)
             for uid in dev_ids:
                 storage.set_pending_fix(uid, change.row.row_number)
-        for uid in set(dev_ids):
+        for uid in dev_ids:
             await safe_send(bot, uid, personal, reply_markup=kb)
             await asyncio.sleep(0.05)
 

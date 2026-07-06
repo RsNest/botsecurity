@@ -11,6 +11,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 from bot.config import (
+    COL_ACTUAL_RELEASE,
     COL_CHECK_DATE,
     COL_CORRECTED_TAG,
     COL_DATE,
@@ -40,6 +41,34 @@ def _col_letter(index: int) -> str:
         index, rem = divmod(index - 1, 26)
         letters = chr(65 + rem) + letters
     return letters
+
+
+def _last_registry_row(values: list[list[str]]) -> int:
+    """Last 1-based sheet row with tag or developer filled."""
+    last = DATA_START_ROW - 1
+    for idx, cells in enumerate(values):
+        row_number = idx + 1
+        if row_number < DATA_START_ROW:
+            continue
+        padded = (cells + [""] * 10)[:10]
+        if padded[COL_TAG].strip() or padded[COL_DEVELOPER].strip():
+            last = row_number
+    return last
+
+
+def _registry_row_is_empty(values: list[list[str]], row_number: int) -> bool:
+    idx = row_number - 1
+    if idx < 0:
+        return False
+    if idx >= len(values):
+        return True
+    padded = (values[idx] + [""] * 10)[:10]
+    return not padded[COL_TAG].strip() and not padded[COL_DEVELOPER].strip()
+
+
+def _row_a1(row_number: int) -> str:
+    last_col = _col_letter(COL_ACTUAL_RELEASE)
+    return f"A{row_number}:{last_col}{row_number}"
 
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 2
@@ -183,17 +212,48 @@ class SheetsClient:
         spreadsheet = self._gc.open_by_key(settings.spreadsheet_id)
         worksheet = self._find_worksheet(spreadsheet)
         existing = worksheet.get_all_values()
-        start_row = len(existing) + 1
-        rows = []
-        for entry in entries:
+
+        start_row = _last_registry_row(existing) + 1
+        while not _registry_row_is_empty(existing, start_row):
+            start_row += 1
+            if start_row > _last_registry_row(existing) + 100:
+                raise RuntimeError(
+                    "Не удалось найти свободную строку для записи — "
+                    "проверьте таблицу вручную."
+                )
+
+        batch: list[dict] = []
+        row_numbers: list[int] = []
+        for i, entry in enumerate(entries):
+            row_number = start_row + i
+            row_numbers.append(row_number)
             row = [""] * 10
             row[COL_DATE] = entry["transfer_date"]
             row[COL_DEVELOPER] = entry["developer"]
             row[COL_TAG] = entry["tag"]
             row[COL_RELEASE] = entry["release"]
-            rows.append(row)
-        worksheet.append_rows(rows, value_input_option="USER_ENTERED")
-        return list(range(start_row, start_row + len(entries)))
+            batch.append({"range": _row_a1(row_number), "values": [row]})
+
+        worksheet.batch_update(batch, value_input_option="USER_ENTERED")
+
+        # Verify each tag landed in the intended row (catches race with manual edits).
+        verify = worksheet.get_all_values()
+        for row_number, entry in zip(row_numbers, entries, strict=True):
+            idx = row_number - 1
+            if idx >= len(verify):
+                raise RuntimeError(
+                    f"Строка {row_number} не появилась после записи. Попробуйте ещё раз."
+                )
+            actual_tag = (verify[idx] + [""] * 10)[COL_TAG].strip()
+            if actual_tag != entry["tag"].strip():
+                shown = actual_tag or "(пусто)"
+                if len(shown) > 60:
+                    shown = shown[:60] + "…"
+                raise RuntimeError(
+                    f"Строка {row_number} уже занята ({shown}). "
+                    "Запись отменена — обновите таблицу и попробуйте снова."
+                )
+        return row_numbers
 
     async def submit_corrected_tag(
         self,

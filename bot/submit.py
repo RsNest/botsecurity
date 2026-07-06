@@ -416,6 +416,18 @@ def setup_submit_handlers(
             }
             for tag in data["tags"]
         ]
+        ok, err = await _ensure_fresh(monitor, force=True)
+        if not ok:
+            await safe_edit(callback.message, f"❌ {err}")
+            return
+        dupes = [t for t in data["tags"] if monitor.find_duplicate_tag(t)]
+        if dupes:
+            lines = "\n".join(f"• <code>{esc(t)}</code>" for t in dupes[:5])
+            await safe_edit(
+                callback.message,
+                f"❌ Пока вы подтверждали, эти теги уже появились в реестре:\n{lines}",
+            )
+            return
         try:
             row_numbers = await monitor.sheets.append_registry_rows(entries)
         except Exception as exc:

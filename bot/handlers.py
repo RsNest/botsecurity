@@ -25,6 +25,7 @@ from bot.dates import (
     period_to_range,
 )
 from bot.formatters import (
+    format_audit_issues,
     format_change,
     format_developers_list,
     format_help,
@@ -72,7 +73,7 @@ from bot.reports import (
     is_low_confidence,
     match_reports,
 )
-from bot.scheduler import broadcast_changes
+from bot.scheduler import broadcast_changes, process_audit
 from bot.storage import Storage
 from bot.utils import safe_edit, safe_send
 
@@ -452,9 +453,29 @@ def setup_handlers(
         if not ok:
             await wait.edit_text(f"❌ Ошибка: {err}")
             return
+        issue_count = await process_audit(bot, monitor, storage)
+        if issue_count:
+            audit_note = f"\n⚠️ Проблем в реестре: {issue_count} — /audit"
+        else:
+            audit_note = "\n✅ Подозрительных строк не найдено."
         await wait.edit_text(
-            f"✅ Синхронизация завершена.\nСтрок: {len(monitor.last_rows)}\nКэш обновлён."
+            f"✅ Синхронизация завершена.\n"
+            f"Строк: {len(monitor.last_rows)}\n"
+            f"Кэш обновлён.{audit_note}"
         )
+
+    @dp.message(Command("audit"))
+    async def cmd_audit(message: Message) -> None:
+        if not message.from_user or not settings.is_admin(message.from_user.id):
+            await message.answer("⛔ Команда только для администратора.")
+            return
+        wait = await message.answer("🔍 Проверяю реестр…")
+        ok, err = await _load_data(monitor, bot, storage, force=True)
+        if not ok:
+            await wait.edit_text(f"❌ Ошибка: {err}")
+            return
+        issues = monitor.audit_issues()
+        await wait.edit_text(format_audit_issues(issues))
 
     @dp.message(Command("stats"))
     async def cmd_stats(message: Message) -> None:

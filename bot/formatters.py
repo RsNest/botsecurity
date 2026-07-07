@@ -512,3 +512,41 @@ def format_welcome() -> str:
         "✅ Вы подписаны на уведомления (отключить — /unsubscribe).\n"
         "Все команды — /help"
     )
+
+
+def format_audit_issues(issues: list, *, title: str | None = None) -> str:
+    from bot.audit import AuditIssue
+
+    if not issues:
+        return "✅ <b>Проверка реестра</b>\n\nПодозрительных строк не найдено."
+
+    header = title or f"⚠️ <b>Проблемы в реестре</b> · {len(issues)}"
+    lines = [header, ""]
+    for issue in issues[:25]:
+        if isinstance(issue, AuditIssue):
+            lines.append(
+                f"• <b>стр. {issue.row_number}</b> — {esc(issue.message)}"
+            )
+    if len(issues) > 25:
+        lines.append(f"\n… и ещё {len(issues) - 25}. Полный список — /audit")
+    lines.append(
+        "\nИсправьте строки в таблице или попросите автора перезаписать через /add."
+    )
+    return "\n".join(lines)
+
+
+def format_audit_alert(issues: list) -> str:
+    from bot.audit import AuditIssue
+
+    lines = [
+        f"⚠️ <b>Новые проблемы в реестре</b> · {len(issues)}",
+        "",
+    ]
+    for issue in issues[:10]:
+        if isinstance(issue, AuditIssue):
+            lines.append(
+                f"• <b>стр. {issue.row_number}</b> — {esc(issue.message)}"
+            )
+    if len(issues) > 10:
+        lines.append(f"\n… и ещё {len(issues) - 10}. Подробнее — /audit")
+    return "\n".join(lines)

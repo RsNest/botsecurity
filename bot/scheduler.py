@@ -12,7 +12,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from datetime import date, timedelta
 
 from bot.config import settings
-from bot.formatters import format_change, format_digest, format_personal_status_change, format_reminder
+from bot.formatters import format_audit_alert, format_change, format_digest, format_personal_status_change, format_reminder
 from bot.keyboards import inline_fix_tag
 from bot.models import RowChange
 from bot.monitor import RegistryMonitor
@@ -93,6 +93,44 @@ async def broadcast_reminder(
         await asyncio.sleep(0.05)
 
 
+async def broadcast_audit_issues(bot: Bot, issues: list) -> None:
+    if not issues or not settings.admin_ids:
+        return
+    text = format_audit_alert(issues)
+    for admin_id in settings.admin_ids:
+        await safe_send(bot, admin_id, text)
+        await asyncio.sleep(0.05)
+
+
+async def process_audit(
+    bot: Bot,
+    monitor: RegistryMonitor,
+    storage: Storage,
+) -> int:
+    """Track registry issues; notify admins about newly detected ones."""
+    issues = monitor.audit_issues()
+    current = {issue.key() for issue in issues}
+    previous = storage.get_audit_issue_keys()
+
+    if not storage.audit_bootstrapped():
+        storage.set_audit_issue_keys(current, bootstrapped=True)
+        logger.info(
+            "Audit bootstrap: tracking %s issues without notification",
+            len(current),
+        )
+        return len(issues)
+
+    new_keys = current - previous
+    if new_keys:
+        new_issues = [issue for issue in issues if issue.key() in new_keys]
+        logger.warning("Audit: %s new issue(s) detected", len(new_issues))
+        await broadcast_audit_issues(bot, new_issues)
+
+    if current != previous:
+        storage.set_audit_issue_keys(current)
+    return len(issues)
+
+
 async def scheduled_scan(
     bot: Bot,
     monitor: RegistryMonitor,
@@ -101,6 +139,7 @@ async def scheduled_scan(
     try:
         result = await monitor.ensure_fresh(force=True)
         await broadcast_changes(bot, storage, result.changes)
+        await process_audit(bot, monitor, storage)
     except Exception:
         logger.exception("Scheduled scan failed")
 

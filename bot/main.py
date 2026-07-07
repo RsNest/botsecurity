@@ -49,6 +49,7 @@ PUBLIC_COMMANDS = [
 
 ADMIN_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand(command="sync", description="[админ] Синхронизация"),
+    BotCommand(command="audit", description="[админ] Проверка реестра"),
     BotCommand(command="stats", description="[админ] Статистика бота"),
     BotCommand(command="users", description="[админ] Активность пользователей"),
     BotCommand(command="setprofile", description="[админ] Профиль user_id"),

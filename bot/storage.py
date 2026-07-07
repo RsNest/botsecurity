@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -94,7 +95,18 @@ class Storage:
                     notified_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, row_number)
                 );
+
+                CREATE TABLE IF NOT EXISTS audit_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    issue_keys TEXT NOT NULL DEFAULT '[]',
+                    bootstrapped INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT ''
+                );
                 """
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO audit_state (id, issue_keys, bootstrapped, updated_at) "
+                "VALUES (1, '[]', 0, '')"
             )
             self._migrate(conn)
 
@@ -514,6 +526,55 @@ class Storage:
             )
             row = cur.fetchone()
             return dict(row) if row else None
+
+    def get_audit_issue_keys(self) -> set[str]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT issue_keys FROM audit_state WHERE id = 1"
+            )
+            row = cur.fetchone()
+            if not row:
+                return set()
+            try:
+                data = json.loads(row["issue_keys"] or "[]")
+            except json.JSONDecodeError:
+                return set()
+            return set(data) if isinstance(data, list) else set()
+
+    def audit_bootstrapped(self) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT bootstrapped FROM audit_state WHERE id = 1"
+            )
+            row = cur.fetchone()
+            return bool(row and row["bootstrapped"])
+
+    def set_audit_issue_keys(
+        self,
+        keys: set[str],
+        *,
+        bootstrapped: bool | None = None,
+    ) -> None:
+        payload = json.dumps(sorted(keys), ensure_ascii=False)
+        with self._connect() as conn:
+            if bootstrapped is None:
+                conn.execute(
+                    """
+                    UPDATE audit_state
+                    SET issue_keys = ?, updated_at = ?
+                    WHERE id = 1
+                    """,
+                    (payload, _now_iso()),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE audit_state
+                    SET issue_keys = ?, bootstrapped = ?, updated_at = ?
+                    WHERE id = 1
+                    """,
+                    (payload, int(bootstrapped), _now_iso()),
+                )
 
 
 def _now_iso() -> str:

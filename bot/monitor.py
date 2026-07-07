@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timezone
 
+from bot.audit import AuditIssue, audit_rows
 from bot.config import FIELD_NAMES, settings
 from bot.models import ImageRow, RowChange, ScanResult
 from bot.sheets import SheetsClient
@@ -259,6 +260,10 @@ class RegistryMonitor:
             if row.row_number == row_number:
                 return row
         return None
+
+    def audit_issues(self, rows: list[ImageRow] | None = None) -> list[AuditIssue]:
+        source = rows if rows is not None else self._last_rows
+        return audit_rows(source)
 
     def last_rows_added(self, count: int = 10) -> list[ImageRow]:
         """Newest rows (bottom of the sheet first)."""

@@ -12,7 +12,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from datetime import date, timedelta
 
 from bot.config import settings
-from bot.formatters import format_audit_alert, format_change, format_digest, format_personal_status_change, format_reminder
+from bot.formatters import format_audit_alert, format_change, format_digest, format_personal_status_change, format_reminder, format_sla_reminder
 from bot.keyboards import inline_fix_tag
 from bot.models import RowChange
 from bot.monitor import RegistryMonitor
@@ -47,6 +47,7 @@ async def broadcast_changes(
 
     for change in changes:
         personal = format_personal_status_change(change)
+        status = change.changed_fields.get("status")
         dev_ids: set[int] = set()
         if personal:
             dev_ids = set(resolve_developer_user_ids(storage, change.row))
@@ -55,18 +56,24 @@ async def broadcast_changes(
         for chat_id in subscribers:
             if chat_id in dev_ids:
                 continue
+            mode = storage.notification_mode(chat_id)
+            new_status = status[1] if status else ""
+            failed = new_status.strip().lower() == "не прошло проверку"
+            if mode in {"off", "mine", "digest"} or (mode == "fail" and not failed):
+                continue
             await safe_send(bot, chat_id, text)
             await asyncio.sleep(0.05)
 
         if not personal or not dev_ids:
             continue
         kb = None
-        status = change.changed_fields.get("status")
         if status and (status[1] or "").strip().lower() == "не прошло проверку":
             kb = inline_fix_tag(change.row.row_number)
             for uid in dev_ids:
                 storage.set_pending_fix(uid, change.row.row_number)
         for uid in dev_ids:
+            if storage.notification_mode(uid) == "off":
+                continue
             await safe_send(bot, uid, personal, reply_markup=kb)
             await asyncio.sleep(0.05)
 
@@ -170,8 +177,43 @@ async def weekly_digest(
     stale = len(monitor.stale_rows(3))
     text = format_digest(summary, len(rows), new_week, stale)
     for chat_id in subscribers:
+        if storage.notification_mode(chat_id) == "off":
+            continue
         await safe_send(bot, chat_id, text)
         await asyncio.sleep(0.05)
+
+
+async def broadcast_sla_reminder(
+    bot: Bot,
+    monitor: RegistryMonitor,
+    storage: Storage,
+) -> None:
+    """Notify owners and administrators about overdue pending transfers."""
+    try:
+        await monitor.ensure_fresh(force=True)
+    except Exception:
+        logger.exception("SLA scan failed")
+        return
+    rows = monitor.stale_rows(settings.sla_pending_days)
+    if not rows:
+        return
+    grouped: dict[int, list] = {}
+    unowned = []
+    for row in rows:
+        owners = resolve_developer_user_ids(storage, row)
+        if owners:
+            for user_id in owners:
+                grouped.setdefault(user_id, []).append(row)
+        else:
+            unowned.append(row)
+    for user_id, user_rows in grouped.items():
+        if storage.notification_mode(user_id) == "off":
+            continue
+        await safe_send(bot, user_id, format_sla_reminder(user_rows, settings.sla_pending_days))
+    if unowned:
+        text = format_sla_reminder(unowned, settings.sla_pending_days)
+        for admin_id in settings.admin_ids:
+            await safe_send(bot, admin_id, text)
 
 
 def setup_scheduler(
@@ -187,6 +229,16 @@ def setup_scheduler(
         IntervalTrigger(minutes=settings.poll_interval_minutes),
         args=[bot, monitor, storage],
         id="poll_sheets",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    scheduler.add_job(
+        broadcast_sla_reminder,
+        CronTrigger(hour=9, minute=10, day_of_week="mon-fri"),
+        args=[bot, monitor, storage],
+        id="sla_reminder",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

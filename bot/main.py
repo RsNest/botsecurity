@@ -42,6 +42,8 @@ PUBLIC_COMMANDS = [
     BotCommand(command="last", description="Последние добавленные"),
     BotCommand(command="by_dev", description="Образы разработчика"),
     BotCommand(command="stale", description="Висят без статуса N дней"),
+    BotCommand(command="history", description="История строки"),
+    BotCommand(command="notify", description="Настроить уведомления"),
     BotCommand(command="subscribe", description="Подписаться"),
     BotCommand(command="unsubscribe", description="Отписаться"),
     BotCommand(command="help", description="Справка"),
@@ -54,6 +56,9 @@ ADMIN_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand(command="users", description="[админ] Активность пользователей"),
     BotCommand(command="setprofile", description="[админ] Профиль user_id"),
     BotCommand(command="broadcast", description="[админ] Рассылка"),
+    BotCommand(command="export", description="[админ] Экспорт CSV"),
+    BotCommand(command="metrics", description="[админ] Метрики реестра"),
+    BotCommand(command="role", description="[админ] Назначить роль"),
 ]
 
 

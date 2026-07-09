@@ -20,7 +20,7 @@ from aiogram.types import (
 
 from bot.config import STATUS_NOT_TRANSFERRED, settings
 from bot.dates import parse_flexible_date
-from bot.formatters import format_add_preview, format_my_rows, format_row_detail
+from bot.formatters import format_add_preview, format_my_rows
 from bot.keyboards import BTN_ADD, BTN_MY, main_reply_keyboard
 from bot.models import ImageRow
 from bot.monitor import RegistryMonitor
@@ -160,6 +160,11 @@ def setup_submit_handlers(
     @dp.message(Command("add"))
     @dp.message(F.text == BTN_ADD)
     async def cmd_add(message: Message, state: FSMContext) -> None:
+        if message.from_user and storage.role_for(message.from_user.id) == "viewer":
+            await message.answer(
+                "⛔ У вашей учётной записи роль наблюдателя: добавление тегов недоступно."
+            )
+            return
         if not monitor.sheets.can_write:
             await message.answer(
                 "🔒 Добавление тегов временно недоступно — нет доступа к записи "

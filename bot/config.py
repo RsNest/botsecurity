@@ -27,6 +27,7 @@ class Settings:
     timezone: str
     cache_ttl_seconds: int
     force_refresh_cooldown: int
+    sla_pending_days: int
 
     @classmethod
     def load(cls) -> Settings:
@@ -62,6 +63,7 @@ class Settings:
             timezone=os.getenv("TIMEZONE", "Europe/Moscow"),
             cache_ttl_seconds=int(os.getenv("CACHE_TTL_SECONDS", "300")),
             force_refresh_cooldown=int(os.getenv("FORCE_REFRESH_COOLDOWN", "10")),
+            sla_pending_days=max(1, int(os.getenv("SLA_PENDING_DAYS", "3"))),
         )
 
     def is_admin(self, user_id: int) -> bool:

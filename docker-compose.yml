@@ -13,3 +13,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; assert Path('/app/data/botscan.db').exists()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

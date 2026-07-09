@@ -15,7 +15,7 @@ import re
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import py7zr
 
@@ -24,6 +24,11 @@ from bot.models import ImageRow
 logger = logging.getLogger(__name__)
 
 MAX_ARCHIVE_SIZE = 20 * 1024 * 1024  # Telegram bot download limit
+# A small upload may expand to many gigabytes.  These limits apply after
+# decompression and keep report parsing bounded even for an admin upload.
+MAX_ARCHIVE_FILES = 500
+MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+MAX_JSON_BYTES = 2 * 1024 * 1024
 
 _VERSION_RE = re.compile(r"(\d+(?:\.\d+)+)")
 # Tokens that carry no identity (registry paths, common noise prefixes)
@@ -108,13 +113,24 @@ def _read_7z(data: bytes) -> dict[str, bytes]:
     try:
         with tempfile.TemporaryDirectory(prefix="ibscan_") as tmp:
             with py7zr.SevenZipFile(io.BytesIO(data)) as archive:
-                archive.extractall(tmp)
+                info = archive.list()
+                _validate_archive_members(
+                    [(item.filename, getattr(item, "uncompressed", None)) for item in info]
+                )
+                # Extract only JSON reports after paths and advertised sizes have
+                # been validated.  Do not use extractall on an untrusted archive.
+                targets = [item.filename for item in info if item.filename.lower().endswith(".json")]
+                archive.extract(path=tmp, targets=targets)
             root = Path(tmp)
-            return {
-                str(path.relative_to(root)): path.read_bytes()
-                for path in root.rglob("*")
-                if path.is_file()
-            }
+            result = {}
+            for path in root.rglob("*.json"):
+                if not path.is_file():
+                    continue
+                size = path.stat().st_size
+                if size > MAX_JSON_BYTES:
+                    raise ReportParseError(f"JSON-отчёт слишком большой: {path.name}")
+                result[str(path.relative_to(root))] = path.read_bytes()
+            return result
     except py7zr.exceptions.Bad7zFile as exc:
         raise ReportParseError(f"Не удалось открыть 7z-архив: {exc}") from exc
 
@@ -122,13 +138,36 @@ def _read_7z(data: bytes) -> dict[str, bytes]:
 def _read_zip(data: bytes) -> dict[str, bytes]:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            return {
-                info.filename: archive.read(info)
-                for info in archive.infolist()
-                if not info.is_dir()
-            }
+            infos = [info for info in archive.infolist() if not info.is_dir()]
+            _validate_archive_members([(info.filename, info.file_size) for info in infos])
+            result = {}
+            for info in infos:
+                if not info.filename.lower().endswith(".json"):
+                    continue
+                if info.file_size > MAX_JSON_BYTES:
+                    raise ReportParseError(f"JSON-отчёт слишком большой: {info.filename}")
+                result[info.filename] = archive.read(info)
+            return result
     except zipfile.BadZipFile as exc:
         raise ReportParseError(f"Не удалось открыть zip-архив: {exc}") from exc
+
+
+def _validate_archive_members(members: list[tuple[str, int | None]]) -> None:
+    """Reject traversal, archive bombs and archives with unknown huge members."""
+    if len(members) > MAX_ARCHIVE_FILES:
+        raise ReportParseError(f"В архиве слишком много файлов (максимум {MAX_ARCHIVE_FILES}).")
+    total = 0
+    for name, size in members:
+        path = PurePosixPath(name.replace("\\", "/"))
+        if path.is_absolute() or ".." in path.parts or not name:
+            raise ReportParseError("Архив содержит небезопасный путь к файлу.")
+        if size is None or size < 0:
+            raise ReportParseError("Не удалось безопасно определить размер файла в архиве.")
+        total += size
+        if total > MAX_UNCOMPRESSED_BYTES:
+            raise ReportParseError(
+                f"Распакованный архив больше лимита {MAX_UNCOMPRESSED_BYTES // 1024 // 1024} МБ."
+            )
 
 
 def _parse_report_json(fname: str, content: bytes) -> ScanReport | None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from math import ceil
 from zoneinfo import ZoneInfo
 
@@ -202,6 +203,53 @@ def format_digest(summary: dict[str, int], total: int, new_week: int, stale: int
         f"❌ Не прошло проверку: {summary['failed']}\n"
         f"🕰 Висят без статуса ≥ 3 дней: {stale}\n"
         f"\n{_SHEET_LINK}"
+    )
+
+
+def format_sla_reminder(rows: list[ImageRow], days: int) -> str:
+    lines = [
+        f"⏰ <b>SLA: образы ожидают передачи ≥ {days} дней</b>",
+        "",
+    ]
+    lines.extend(format_row_brief(row) for row in rows[:20])
+    if len(rows) > 20:
+        lines.append(f"\n… и ещё {len(rows) - 20}")
+    lines.append(f"\n{_SHEET_LINK}")
+    return "\n".join(lines)
+
+
+def format_history(row_number: int, items: list[dict]) -> str:
+    if not items:
+        return f"<b>История строки {row_number}</b>\n\nИзменений пока нет."
+    lines = [f"<b>История строки {row_number}</b>", ""]
+    for item in items:
+        try:
+            old = ImageRow.from_payload(item["old_payload"])
+            new = ImageRow.from_payload(item["new_payload"])
+        except (KeyError, TypeError, json.JSONDecodeError):
+            old = new = None
+        at = esc(item["changed_at"].replace("T", " ")[:16])
+        kind = {"new": "добавлена", "updated": "изменена", "removed": "удалена"}.get(
+            item["change_type"], item["change_type"]
+        )
+        detail = ""
+        if old and new:
+            fields = [
+                label for field, label in FIELD_NAMES.items()
+                if getattr(old, field) != getattr(new, field)
+            ]
+            detail = f": {esc(', '.join(fields[:4]))}" if fields else ""
+        lines.append(f"• {at} — {esc(kind)}{detail}")
+    return "\n".join(lines)
+
+
+def format_metrics(metrics: dict[str, float | int]) -> str:
+    return (
+        "📈 <b>Метрики реестра</b>\n\n"
+        f"Всего образов: {metrics['total']}\n"
+        f"С финальным вердиктом: {metrics['terminal']}\n"
+        f"Прошли с первой попытки: {metrics['first_pass_rate']}%\n"
+        f"Среднее время проверки: {metrics['avg_check_days']} дн."
     )
 
 

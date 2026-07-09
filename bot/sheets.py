@@ -4,6 +4,8 @@ import asyncio
 import csv
 import io
 import logging
+import re
+import threading
 from urllib.parse import urlencode
 
 import aiohttp
@@ -70,6 +72,18 @@ def _row_a1(row_number: int) -> str:
     last_col = _col_letter(COL_ACTUAL_RELEASE)
     return f"A{row_number}:{last_col}{row_number}"
 
+
+def _rows_from_updated_range(updated_range: str, expected_count: int) -> list[int]:
+    """Extract start/end rows from a Sheets API updatedRange value."""
+    numbers = [int(value) for value in re.findall(r"[A-Z]+(\d+)", updated_range)]
+    if not numbers:
+        return []
+    start = numbers[0]
+    end = numbers[-1] if len(numbers) > 1 else start + expected_count - 1
+    if end - start + 1 != expected_count:
+        return []
+    return list(range(start, end + 1))
+
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 2
 
@@ -77,6 +91,9 @@ RETRY_BACKOFF_SECONDS = 2
 class SheetsClient:
     def __init__(self) -> None:
         self._gc: gspread.Client | None = None
+        # Serialises writes made by this process. Google Sheets remains the
+        # source of truth, but this prevents two bot confirmations racing.
+        self._write_lock = threading.Lock()
 
     async def fetch_rows(self) -> list[ImageRow]:
         last_exc: Exception | None = None
@@ -187,7 +204,8 @@ class SheetsClient:
                     "range": f"{date_col}{row_number}",
                     "values": [[check_date]],
                 })
-        worksheet.batch_update(batch, value_input_option="USER_ENTERED")
+        with self._write_lock:
+            worksheet.batch_update(batch, value_input_option="USER_ENTERED")
 
     async def append_registry_rows(
         self,
@@ -211,30 +229,30 @@ class SheetsClient:
             self._gc = gspread.authorize(creds)
         spreadsheet = self._gc.open_by_key(settings.spreadsheet_id)
         worksheet = self._find_worksheet(spreadsheet)
-        existing = worksheet.get_all_values()
-
-        start_row = _last_registry_row(existing) + 1
-        while not _registry_row_is_empty(existing, start_row):
-            start_row += 1
-            if start_row > _last_registry_row(existing) + 100:
-                raise RuntimeError(
-                    "Не удалось найти свободную строку для записи — "
-                    "проверьте таблицу вручную."
-                )
-
-        batch: list[dict] = []
-        row_numbers: list[int] = []
-        for i, entry in enumerate(entries):
-            row_number = start_row + i
-            row_numbers.append(row_number)
+        values: list[list[str]] = []
+        for entry in entries:
             row = [""] * 10
             row[COL_DATE] = entry["transfer_date"]
             row[COL_DEVELOPER] = entry["developer"]
             row[COL_TAG] = entry["tag"]
             row[COL_RELEASE] = entry["release"]
-            batch.append({"range": _row_a1(row_number), "values": [row]})
+            values.append(row)
 
-        worksheet.batch_update(batch, value_input_option="USER_ENTERED")
+        # append_rows delegates row selection to the Sheets API.  Unlike a
+        # stale read + batch_update it never overwrites a row added manually
+        # while a user is confirming the bot preview.
+        with self._write_lock:
+            response = worksheet.append_rows(
+                values,
+                table_range=f"A{DATA_START_ROW}:{_col_letter(COL_ACTUAL_RELEASE)}",
+                value_input_option="USER_ENTERED",
+                insert_data_option="INSERT_ROWS",
+                include_values_in_response=True,
+            )
+        updated_range = response.get("updates", {}).get("updatedRange", "")
+        row_numbers = _rows_from_updated_range(updated_range, len(entries))
+        if not row_numbers:
+            raise RuntimeError("Sheets API не вернул номера добавленных строк.")
 
         # Verify each tag landed in the intended row (catches race with manual edits).
         verify = worksheet.get_all_values()
@@ -254,7 +272,6 @@ class SheetsClient:
                     "Запись отменена — обновите таблицу и попробуйте снова."
                 )
         return row_numbers
-
     async def submit_corrected_tag(
         self,
         row_number: int,
@@ -281,14 +298,15 @@ class SheetsClient:
         corrected_col = _col_letter(COL_CORRECTED_TAG)
         status_col = _col_letter(COL_STATUS)
         date_col = _col_letter(COL_CHECK_DATE)
-        worksheet.batch_update(
-            [
-                {"range": f"{corrected_col}{row_number}", "values": [[corrected_tag]]},
-                {"range": f"{status_col}{row_number}", "values": [[STATUS_NOT_TRANSFERRED]]},
-                {"range": f"{date_col}{row_number}", "values": [[""]]},
-            ],
-            value_input_option="USER_ENTERED",
-        )
+        with self._write_lock:
+            worksheet.batch_update(
+                [
+                    {"range": f"{corrected_col}{row_number}", "values": [[corrected_tag]]},
+                    {"range": f"{status_col}{row_number}", "values": [[STATUS_NOT_TRANSFERRED]]},
+                    {"range": f"{date_col}{row_number}", "values": [[""]]},
+                ],
+                value_input_option="USER_ENTERED",
+            )
 
     def _parse_rows(self, values: list[list[str]]) -> list[ImageRow]:
         result: list[ImageRow] = []

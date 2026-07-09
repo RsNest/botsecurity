@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
 import secrets
 from collections import defaultdict
-from datetime import date, datetime
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
@@ -14,6 +17,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    BufferedInputFile,
 )
 
 from bot.config import settings
@@ -26,9 +30,10 @@ from bot.dates import (
 )
 from bot.formatters import (
     format_audit_issues,
-    format_change,
     format_developers_list,
+    format_history,
     format_help,
+    format_metrics,
     format_releases_list,
     format_report_preview,
     format_row_detail,
@@ -84,7 +89,18 @@ _awaiting_custom_date: dict[int, str] = {}  # user_id -> date_field
 # Per-chat dynamic result cache for paginating ad-hoc queries (find/by_dev/stale)
 _dynamic_results: dict[int, tuple[str, list[ImageRow]]] = {}
 # token -> parsed report matches awaiting admin confirmation
-_pending_reports: dict[str, list[ReportMatch]] = {}
+REPORT_CONFIRM_TTL = timedelta(minutes=15)
+
+
+@dataclass
+class PendingReport:
+    owner_id: int
+    created_at: datetime
+    matches: list[ReportMatch]
+    row_hashes: dict[int, str]
+
+
+_pending_reports: dict[str, PendingReport] = {}
 
 # token -> (title, monitor method name)
 VIEWS: dict[str, tuple[str, str]] = {
@@ -112,6 +128,10 @@ def _force_refresh_blocked(user_id: int) -> int:
 
 def _mark_force_refresh(user_id: int) -> None:
     _last_force_refresh[user_id] = datetime.now()
+
+
+def _can_apply_reports(storage: Storage, user_id: int) -> bool:
+    return settings.is_admin(user_id) or storage.is_ib_operator(user_id)
 
 
 def _custom_date_keyboard(date_field: str, start: date, end: date) -> InlineKeyboardMarkup:
@@ -551,6 +571,78 @@ def setup_handlers(
             await asyncio.sleep(0.05)
         await message.answer(f"✅ Отправлено {sent}/{len(subs)} подписчикам.")
 
+    @dp.message(Command("role"))
+    async def cmd_role(message: Message, command: CommandObject) -> None:
+        if not message.from_user or not settings.is_admin(message.from_user.id):
+            await message.answer("⛔ Команда только для администратора.")
+            return
+        parts = (command.args or "").split()
+        if len(parts) != 2 or not parts[0].isdigit() or parts[1] not in {"developer", "ib_operator", "viewer"}:
+            await message.answer("Использование: /role 145212489 ib_operator")
+            return
+        storage.set_role(int(parts[0]), parts[1])
+        await message.answer(f"✅ Роль пользователя <code>{parts[0]}</code>: <b>{parts[1]}</b>")
+
+    @dp.message(Command("notify"))
+    async def cmd_notify(message: Message, command: CommandObject) -> None:
+        if not message.from_user:
+            return
+        mode = (command.args or "").strip().lower()
+        labels = {
+            "all": "все изменения", "mine": "только личные", "fail": "только провалы", "digest": "только дайджест", "off": "выключены",
+        }
+        if mode not in labels:
+            await message.answer("Использование: /notify all|mine|fail|digest|off")
+            return
+        storage.set_notification_mode(message.from_user.id, mode)
+        await message.answer(f"✅ Уведомления: <b>{labels[mode]}</b>")
+
+    @dp.message(Command("history"))
+    async def cmd_history(message: Message, command: CommandObject) -> None:
+        raw = (command.args or "").strip()
+        if not raw.isdigit():
+            await message.answer("Использование: /history номер_строки")
+            return
+        await message.answer(format_history(int(raw), storage.row_history(int(raw))), parse_mode=ParseMode.HTML)
+
+    @dp.message(Command("metrics"))
+    async def cmd_metrics(message: Message) -> None:
+        if not message.from_user or not settings.is_admin(message.from_user.id):
+            await message.answer("⛔ Команда только для администратора.")
+            return
+        ok, err = await _load_data(monitor, bot, storage)
+        if not ok:
+            await message.answer(f"❌ {err}")
+            return
+        await message.answer(format_metrics(monitor.quality_metrics()), parse_mode=ParseMode.HTML)
+
+    @dp.message(Command("export"))
+    async def cmd_export(message: Message, command: CommandObject) -> None:
+        if not message.from_user or not settings.is_admin(message.from_user.id):
+            await message.answer("⛔ Экспорт доступен только администратору.")
+            return
+        kind = (command.args or "all").strip().lower()
+        ok, err = await _load_data(monitor, bot, storage)
+        if not ok:
+            await message.answer(f"❌ {err}")
+            return
+        filters = {
+            "all": lambda row: True,
+            "pending": lambda row: row.is_pending_ops(),
+            "failed": lambda row: row.is_failed(),
+            "passed": lambda row: row.is_passed(),
+        }
+        if kind not in filters:
+            await message.answer("Использование: /export all|pending|failed|passed")
+            return
+        stream = io.StringIO(newline="")
+        writer = csv.writer(stream)
+        writer.writerow(["Строка", "Дата передачи", "Разработчик", "Тег", "Исправленный тег", "Релиз", "Статус", "Дата проверки"])
+        for row in filter(filters[kind], monitor.last_rows):
+            writer.writerow([row.row_number, row.transfer_date, row.developer, row.tag, row.corrected_tag, row.release, row.status, row.check_date])
+        payload = stream.getvalue().encode("utf-8-sig")
+        await message.answer_document(BufferedInputFile(payload, filename=f"registry-{kind}.csv"))
+
     # --- IB scan report archives -------------------------------------------
 
     @dp.message(F.document)
@@ -565,9 +657,9 @@ def setup_handlers(
                 "Пришлите архив со сканами — я разберу его и предложу статусы."
             )
             return
-        if not message.from_user or not settings.is_admin(message.from_user.id):
+        if not message.from_user or not _can_apply_reports(storage, message.from_user.id):
             await message.answer(
-                "⛔ Обработка отчётов ИБ доступна только администратору."
+                "⛔ Обработка отчётов ИБ доступна только администратору или оператору ИБ."
             )
             return
         if doc.file_size and doc.file_size > MAX_ARCHIVE_SIZE:
@@ -604,7 +696,12 @@ def setup_handlers(
         kb = None
         if can_write and applicable:
             token = secrets.token_hex(4)
-            _pending_reports[token] = matches
+            _pending_reports[token] = PendingReport(
+                owner_id=message.from_user.id,
+                created_at=datetime.now(),
+                matches=matches,
+                row_hashes={m.row.row_number: m.row.content_hash() for m in matches if m.row},
+            )
             # Keep only the few most recent pending reports
             while len(_pending_reports) > 5:
                 _pending_reports.pop(next(iter(_pending_reports)))
@@ -627,11 +724,11 @@ def setup_handlers(
             return
         action, token = parts[1], parts[2]
 
-        if not callback.from_user or not settings.is_admin(callback.from_user.id):
-            await callback.answer("Только для администратора", show_alert=True)
+        if not callback.from_user or not _can_apply_reports(storage, callback.from_user.id):
+            await callback.answer("Только для администратора или оператора ИБ", show_alert=True)
             return
 
-        matches = _pending_reports.get(token)
+        pending = _pending_reports.get(token)
         if action == "cancel":
             _pending_reports.pop(token, None)
             await callback.answer("Отменено")
@@ -642,15 +739,30 @@ def setup_handlers(
                 )
             return
 
-        if matches is None:
+        if pending is None or pending.owner_id != callback.from_user.id or datetime.now() - pending.created_at > REPORT_CONFIRM_TTL:
+            _pending_reports.pop(token, None)
             await callback.answer(
                 "Этот отчёт устарел, пришлите архив ещё раз.", show_alert=True
             )
             return
+        matches = pending.matches
 
         await callback.answer("Записываю…")
         if callback.message:
             await safe_edit(callback.message, "⏳ Проставляю статусы в таблице…")
+
+        # Prevent a preview from overwriting a row changed manually after the
+        # report was parsed.  The administrator can upload the report again.
+        ok, err = await _load_data(monitor, bot, storage, force=True)
+        if not ok:
+            await safe_edit(callback.message, f"❌ Не удалось обновить таблицу: {err}")
+            return
+        current = {row.row_number: row for row in monitor.last_rows}
+        stale = [number for number, digest in pending.row_hashes.items() if number not in current or current[number].content_hash() != digest]
+        if stale:
+            _pending_reports.pop(token, None)
+            await safe_edit(callback.message, "⚠️ Строки изменились после предпросмотра (" + ", ".join(map(str, stale[:10])) + "). Отчёт не применён — загрузите его повторно.")
+            return
 
         today_str = date.today().strftime("%d.%m.%Y")
         updates = []

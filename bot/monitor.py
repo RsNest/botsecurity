@@ -66,6 +66,18 @@ class RegistryMonitor:
 
             changes = self._detect_changes(rows, snapshots)
 
+            # Keep an append-only audit trail separate from the current
+            # snapshot, so a card can explain how it reached its state.
+            if not bootstrap:
+                for change in changes:
+                    old_row = snapshots.get(change.row.row_number, ("", None))[1]
+                    self.storage.log_row_history(
+                        change.row.row_number,
+                        change.change_type,
+                        old_row.to_payload() if old_row else "{}",
+                        change.row.to_payload() if change.change_type != "removed" else "{}",
+                    )
+
             to_upsert = [
                 (change.row, change.row.content_hash())
                 for change in changes
@@ -350,3 +362,20 @@ class RegistryMonitor:
             else:
                 summary["other"] += 1
         return summary
+
+    def quality_metrics(self, rows: list[ImageRow] | None = None) -> dict[str, float | int]:
+        """Operational indicators for the admin dashboard."""
+        source = rows if rows is not None else self._last_rows
+        terminal = [row for row in source if row.is_terminal()]
+        first_pass = [row for row in source if row.is_passed() and not row.corrected_tag]
+        durations = []
+        for row in terminal:
+            transfer, checked = row.parse_transfer_date(), row.parse_check_date()
+            if transfer and checked and checked >= transfer:
+                durations.append((checked - transfer).days)
+        return {
+            "total": len(source),
+            "terminal": len(terminal),
+            "first_pass_rate": round(100 * len(first_pass) / len(terminal), 1) if terminal else 0,
+            "avg_check_days": round(sum(durations) / len(durations), 1) if durations else 0,
+        }

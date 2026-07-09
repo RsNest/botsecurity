@@ -102,6 +102,29 @@ class Storage:
                     bootstrapped INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL DEFAULT ''
                 );
+
+                CREATE TABLE IF NOT EXISTS user_roles (
+                    user_id INTEGER PRIMARY KEY,
+                    role TEXT NOT NULL CHECK (role IN ('developer', 'ib_operator', 'viewer')),
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS notification_preferences (
+                    user_id INTEGER PRIMARY KEY,
+                    mode TEXT NOT NULL CHECK (mode IN ('all', 'mine', 'fail', 'digest', 'off')),
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS row_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    row_number INTEGER NOT NULL,
+                    changed_at TEXT NOT NULL,
+                    change_type TEXT NOT NULL,
+                    old_payload TEXT NOT NULL DEFAULT '{}',
+                    new_payload TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_row_history_row
+                    ON row_history(row_number, id DESC);
                 """
             )
             conn.execute(
@@ -360,6 +383,74 @@ class Storage:
                 "DELETE FROM activity_log WHERE at < datetime('now', ?)",
                 (f"-{keep_days} days",),
             )
+
+    # --- Roles, preferences and change history -----------------------------
+
+    def set_role(self, user_id: int, role: str) -> None:
+        if role not in {"developer", "ib_operator", "viewer"}:
+            raise ValueError("Unknown role")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_roles (user_id, role, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET role = excluded.role, updated_at = excluded.updated_at
+                """,
+                (user_id, role, _now_iso()),
+            )
+
+    def role_for(self, user_id: int) -> str:
+        with self._connect() as conn:
+            row = conn.execute("SELECT role FROM user_roles WHERE user_id = ?", (user_id,)).fetchone()
+            return str(row["role"]) if row else "developer"
+
+    def is_ib_operator(self, user_id: int) -> bool:
+        return self.role_for(user_id) == "ib_operator"
+
+    def set_notification_mode(self, user_id: int, mode: str) -> None:
+        if mode not in {"all", "mine", "fail", "digest", "off"}:
+            raise ValueError("Unknown notification mode")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO notification_preferences (user_id, mode, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at
+                """,
+                (user_id, mode, _now_iso()),
+            )
+
+    def notification_mode(self, user_id: int) -> str:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT mode FROM notification_preferences WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return str(row["mode"]) if row else "all"
+
+    def log_row_history(
+        self,
+        row_number: int,
+        change_type: str,
+        old_payload: str = "{}",
+        new_payload: str = "{}",
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO row_history (row_number, changed_at, change_type, old_payload, new_payload)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (row_number, _now_iso(), change_type, old_payload, new_payload),
+            )
+
+    def row_history(self, row_number: int, limit: int = 20) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT changed_at, change_type, old_payload, new_payload
+                FROM row_history WHERE row_number = ? ORDER BY id DESC LIMIT ?
+                """,
+                (row_number, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     # --- Developer profiles & tag authorship ---------------------------------
 

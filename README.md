@@ -113,6 +113,8 @@ docker compose logs -f
 ```env
 TELEGRAM_TOKEN=...           # от @BotFather
 ADMIN_IDS=145212489          # ваш Telegram user id
+BOT_UID=1000                 # Linux Docker-хост: вывод команды id -u
+BOT_GID=1000                 # Linux Docker-хост: вывод команды id -g
 SPREADSHEET_ID=1l-FSeC1mfIXqX-bvoKdfRV5txF0TDQ5aD-8GD8Ey-sw
 SHEET_GID=684739217
 GOOGLE_CREDENTIALS_PATH=credentials.json

@@ -45,6 +45,7 @@ PUBLIC_COMMANDS = [
     BotCommand(command="stale", description="Висят без статуса N дней"),
     BotCommand(command="history", description="История строки"),
     BotCommand(command="notify", description="Настроить уведомления"),
+    BotCommand(command="version", description="Версия бота и сборки образа"),
     BotCommand(command="subscribe", description="Подписаться"),
     BotCommand(command="unsubscribe", description="Отписаться"),
     BotCommand(command="help", description="Справка"),

@@ -81,6 +81,7 @@ from bot.reports import (
 from bot.scheduler import broadcast_changes, process_audit
 from bot.storage import Storage
 from bot.utils import safe_edit, safe_send
+from bot.version import format_version
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +315,10 @@ def setup_handlers(
             reply_markup=main_reply_keyboard(),
         )
         await message.answer("Быстрый доступ:", reply_markup=inline_main_menu())
+
+    @dp.message(Command("version", "ping"))
+    async def cmd_version(message: Message) -> None:
+        await message.answer(format_version(), parse_mode=ParseMode.HTML)
 
     @dp.message(Command("dates"))
     async def cmd_dates(message: Message) -> None:

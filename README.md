@@ -94,21 +94,40 @@
 
 ## Быстрый старт (Docker на VDS)
 
+Образ собирается в GitHub Actions и лежит в GHCR: `ghcr.io/rsnest/botsecurity:latest`.
+На слабой VDS **не билдим** — только pull.
+
 ```bash
 git clone https://github.com/RsNest/botsecurity.git
 cd botsecurity
 
-# Создать .env из примера и заполнить
 cp .env.example .env
 nano .env
 
-# Google Service Account (рекомендуется)
 cp credentials.json.example credentials.json
-# Вставить реальный JSON, расшарить таблицу на client_email
+# расшарить таблицы на client_email сервисного аккаунта
 
-docker compose up -d --build
-docker compose logs -f
+# один раз: логин в GHCR (PAT или gh auth token с read:packages)
+echo YOUR_GITHUB_TOKEN | sudo docker login ghcr.io -u RsNest --password-stdin
+
+sudo docker compose pull
+sudo docker compose up -d
+sudo docker compose logs -f
 ```
+
+### Обновление бота после правок в репо
+
+1. Пушишь в `main` → Actions сам собирает и пушит образ (~1–3 мин).
+2. На VDS:
+
+```bash
+cd /home/rudolf710/botsecurity
+git pull   # подтянуть compose/.env.example при необходимости
+sudo docker compose pull
+sudo docker compose up -d
+```
+
+Локальная сборка на VDS больше не нужна (`build:` закомментирован в compose).
 
 ## Переменные окружения (.env)
 

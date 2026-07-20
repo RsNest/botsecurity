@@ -1,6 +1,8 @@
 services:
   bot:
-    build: .
+    image: ghcr.io/rsnest/botsecurity:latest
+    # Локальная отладка без GHCR: раскомментируй и закомментируй image выше
+    # build: .
     container_name: botsecurity
     restart: unless-stopped
     # Match the host owner of ./data so an existing SQLite volume remains

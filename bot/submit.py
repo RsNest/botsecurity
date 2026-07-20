@@ -21,7 +21,7 @@ from aiogram.types import (
 from bot.config import STATUS_NOT_TRANSFERRED, settings
 from bot.dates import parse_flexible_date
 from bot.formatters import format_add_preview, format_my_rows
-from bot.keyboards import BTN_ADD, BTN_MY, main_reply_keyboard
+from bot.keyboards import BTN_ADD, BTN_FIX, BTN_MY, main_reply_keyboard
 from bot.models import ImageRow
 from bot.monitor import RegistryMonitor
 from bot.storage import Storage
@@ -115,9 +115,17 @@ def _confirm_keyboard(prefix: str) -> InlineKeyboardMarkup:
     )
 
 
-def _fix_pick_keyboard(rows: list[ImageRow]) -> InlineKeyboardMarkup:
+def _fix_pick_keyboard(
+    rows: list[ImageRow],
+    *,
+    show_all_button: bool = False,
+    page: int = 0,
+    page_size: int = 10,
+) -> InlineKeyboardMarkup:
+    start = page * page_size
+    chunk = rows[start : start + page_size]
     buttons: list[list[InlineKeyboardButton]] = []
-    for row in rows[:10]:
+    for row in chunk:
         label = row.short_tag(35)
         buttons.append([
             InlineKeyboardButton(
@@ -125,8 +133,147 @@ def _fix_pick_keyboard(rows: list[ImageRow]) -> InlineKeyboardMarkup:
                 callback_data=f"fix:pick:{row.row_number}",
             )
         ])
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton(text="◀️", callback_data=f"fix:page:{page - 1}")
+        )
+    if start + page_size < len(rows):
+        nav.append(
+            InlineKeyboardButton(text="▶️", callback_data=f"fix:page:{page + 1}")
+        )
+    if nav:
+        buttons.append(nav)
+    if show_all_button:
+        buttons.append([
+            InlineKeyboardButton(
+                text="📋 Все непрошедшие без исправления",
+                callback_data="fix:scope:all",
+            )
+        ])
     buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="fix:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _failed_without_corrected(monitor: RegistryMonitor) -> list[ImageRow]:
+    return [
+        row
+        for row in monitor.rows_failed()
+        if not (row.corrected_tag or "").strip()
+    ]
+
+
+def _fix_candidates_for_user(
+    monitor: RegistryMonitor,
+    storage: Storage,
+    user_id: int,
+    *,
+    scope: str = "mine",
+) -> list[ImageRow]:
+    rows = _failed_without_corrected(monitor)
+    if scope == "all":
+        return rows
+
+    profile = storage.get_profile(user_id)
+    mine: list[ImageRow] = []
+    if profile:
+        surname = profile["surname"].strip().lower()
+        mine = [
+            row for row in rows if row.developer.strip().lower() == surname
+        ]
+    if not mine:
+        mine = [
+            row
+            for row in rows
+            if storage.row_author(row.row_number) == user_id
+        ]
+    return mine
+
+
+async def _start_fix_picker(
+    target: Message,
+    state: FSMContext,
+    monitor: RegistryMonitor,
+    storage: Storage,
+    user_id: int,
+    *,
+    scope: str = "mine",
+    edit: bool = False,
+) -> None:
+    ok, err = await _ensure_fresh(monitor, force=True)
+    if not ok:
+        text = f"❌ {err}"
+        if edit:
+            await safe_edit(target, text)
+        else:
+            await target.answer(text)
+        return
+
+    rows = _fix_candidates_for_user(monitor, storage, user_id, scope=scope)
+    show_all = scope == "mine"
+    if not rows and scope == "mine":
+        all_rows = _failed_without_corrected(monitor)
+        if all_rows:
+            await state.set_state(FixTagStates.pick_row)
+            await state.update_data(fix_scope="mine", fix_page=0)
+            text = (
+                "🔧 <b>Исправленный тег</b>\n\n"
+                "Среди ваших образов нет строк со статусом «не прошло проверку» "
+                "без исправленного тега.\n\n"
+                "Можно открыть общий список или задать фамилию в /profile."
+            )
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="📋 Все непрошедшие без исправления",
+                            callback_data="fix:scope:all",
+                        )
+                    ],
+                    [InlineKeyboardButton(text="❌ Отмена", callback_data="fix:cancel")],
+                ]
+            )
+            if edit:
+                await safe_edit(target, text, reply_markup=kb)
+            else:
+                await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            return
+        text = (
+            "✅ Нет образов со статусом «не прошло проверку» "
+            "без заполненного «Исправленный тег»."
+        )
+        if edit:
+            await safe_edit(target, text)
+        else:
+            await target.answer(text)
+        return
+
+    if not rows:
+        text = (
+            "✅ Нет образов со статусом «не прошло проверку» "
+            "без заполненного «Исправленный тег»."
+        )
+        if edit:
+            await safe_edit(target, text)
+        else:
+            await target.answer(text)
+        return
+
+    await state.set_state(FixTagStates.pick_row)
+    await state.update_data(
+        fix_scope=scope, fix_page=0, corrected_tag=None, fix_query=""
+    )
+    title = (
+        "🔧 <b>Выберите образ для исправленного тега</b>\n\n"
+        f"Найдено: {len(rows)} (статус «не прошло», колонка исправления пуста).\n"
+        "Можно сузить список — напишите часть тега или фамилии.\n"
+        "После выбора пришлите новый тег одной строкой."
+    )
+    kb = _fix_pick_keyboard(rows, show_all_button=show_all and scope == "mine")
+    if edit:
+        await safe_edit(target, title, reply_markup=kb)
+    else:
+        await target.answer(title, parse_mode=ParseMode.HTML, reply_markup=kb)
 
 
 async def _notify_admins(bot: Bot, text: str) -> None:
@@ -180,6 +327,145 @@ def setup_submit_handlers(
             "<code>harbor.uis.st/images/my/service:app-1.0.0</code>\n\n"
             "Отмена — /cancel",
             parse_mode=ParseMode.HTML,
+        )
+
+    @dp.message(Command("fix"))
+    @dp.message(F.text == BTN_FIX)
+    async def cmd_fix(message: Message, state: FSMContext) -> None:
+        if not message.from_user:
+            return
+        if storage.role_for(message.from_user.id) == "viewer":
+            await message.answer(
+                "⛔ У вашей учётной записи роль наблюдателя: "
+                "исправленный тег недоступен."
+            )
+            return
+        if not monitor.sheets.can_write:
+            await message.answer(
+                "🔒 Запись исправленного тега недоступна — нет credentials.json."
+            )
+            return
+        await state.clear()
+        await _start_fix_picker(
+            message, state, monitor, storage, message.from_user.id, scope="mine"
+        )
+
+    @dp.callback_query(F.data == "act:fix")
+    async def cb_act_fix(callback: CallbackQuery, state: FSMContext) -> None:
+        await callback.answer()
+        if not callback.from_user or not callback.message:
+            return
+        if storage.role_for(callback.from_user.id) == "viewer":
+            await safe_edit(
+                callback.message,
+                "⛔ У вашей учётной записи роль наблюдателя: "
+                "исправленный тег недоступен.",
+            )
+            return
+        if not monitor.sheets.can_write:
+            await safe_edit(
+                callback.message,
+                "🔒 Запись исправленного тега недоступна — нет credentials.json.",
+            )
+            return
+        await state.clear()
+        await _start_fix_picker(
+            callback.message,
+            state,
+            monitor,
+            storage,
+            callback.from_user.id,
+            scope="mine",
+            edit=True,
+        )
+
+    @dp.callback_query(F.data == "fix:scope:all")
+    async def fix_scope_all(callback: CallbackQuery, state: FSMContext) -> None:
+        await callback.answer()
+        if not callback.from_user or not callback.message:
+            return
+        await _start_fix_picker(
+            callback.message,
+            state,
+            monitor,
+            storage,
+            callback.from_user.id,
+            scope="all",
+            edit=True,
+        )
+
+    @dp.callback_query(F.data.startswith("fix:page:"), FixTagStates.pick_row)
+    async def fix_page(callback: CallbackQuery, state: FSMContext) -> None:
+        await callback.answer()
+        if not callback.from_user or not callback.message:
+            return
+        page = int(callback.data.split(":")[2])
+        data = await state.get_data()
+        scope = data.get("fix_scope", "mine")
+        rows = _fix_candidates_for_user(
+            monitor, storage, callback.from_user.id, scope=scope
+        )
+        query = (data.get("fix_query") or "").strip().lower()
+        if query:
+            rows = [
+                row
+                for row in rows
+                if query in row.tag.lower()
+                or query in row.developer.lower()
+                or query in row.release.lower()
+            ]
+        await state.update_data(fix_page=page)
+        await safe_edit(
+            callback.message,
+            "🔧 <b>Выберите образ для исправленного тега</b>\n\n"
+            f"Найдено: {len(rows)}"
+            + (f" по запросу «{esc(query)}»" if query else "")
+            + " (статус «не прошло», колонка исправления пуста).\n"
+            "Можно сузить список — напишите часть тега или фамилии.\n"
+            "После выбора пришлите новый тег одной строкой.",
+            reply_markup=_fix_pick_keyboard(
+                rows,
+                show_all_button=scope == "mine" and not query,
+                page=page,
+            ),
+        )
+
+    @dp.message(FixTagStates.pick_row)
+    async def fix_pick_search(message: Message, state: FSMContext) -> None:
+        if not message.from_user:
+            return
+        query = (message.text or "").strip()
+        if query.lower() in {"/cancel", "отмена"}:
+            await state.clear()
+            await message.answer("❌ Отменено.")
+            return
+        data = await state.get_data()
+        scope = data.get("fix_scope", "mine")
+        rows = _fix_candidates_for_user(
+            monitor, storage, message.from_user.id, scope=scope
+        )
+        q = query.lower()
+        filtered = [
+            row
+            for row in rows
+            if q in row.tag.lower()
+            or q in row.developer.lower()
+            or q in row.release.lower()
+        ]
+        await state.update_data(fix_query=query, fix_page=0)
+        if not filtered:
+            await message.answer(
+                f"Ничего не найдено по «{esc(query)}». "
+                "Попробуйте другую подстроку или /cancel.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await message.answer(
+            "🔧 <b>Выберите образ для исправленного тега</b>\n\n"
+            f"Найдено: {len(filtered)} по запросу «{esc(query)}».\n"
+            "После выбора пришлите новый тег одной строкой.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_fix_pick_keyboard(filtered, show_all_button=False, page=0),
         )
 
     @dp.message(Command("profile"))

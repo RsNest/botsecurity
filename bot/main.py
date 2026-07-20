@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 PUBLIC_COMMANDS = [
     BotCommand(command="add", description="Добавить тег в реестр"),
+    BotCommand(command="fix", description="Исправленный тег после провала"),
     BotCommand(command="my", description="Мои образы"),
     BotCommand(command="profile", description="Мой профиль разработчика"),
     BotCommand(command="pending", description="Ожидают передачи на проверку"),

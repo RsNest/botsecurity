@@ -5,6 +5,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardBu
 # --- Reply keyboard (нижнее меню) ---
 
 BTN_ADD = "➕ Добавить тег"
+BTN_FIX = "🔧 Исправленный тег"
 BTN_MY = "📋 Мои образы"
 BTN_PENDING = "⏳ Ожидают"
 BTN_ON_REVIEW = "🔍 На проверке"
@@ -20,6 +21,7 @@ BTN_RELEASES = "🏷 Релизы"
 
 REPLY_BUTTONS = {
     BTN_ADD,
+    BTN_FIX,
     BTN_MY,
     BTN_PENDING,
     BTN_ON_REVIEW,
@@ -38,12 +40,13 @@ REPLY_BUTTONS = {
 def main_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_MY)],
-            [KeyboardButton(text=BTN_PENDING), KeyboardButton(text=BTN_ON_REVIEW)],
-            [KeyboardButton(text=BTN_PASSED), KeyboardButton(text=BTN_FAILED)],
-            [KeyboardButton(text=BTN_DEVS), KeyboardButton(text=BTN_RELEASES)],
-            [KeyboardButton(text=BTN_STATUS), KeyboardButton(text=BTN_BY_DATE)],
-            [KeyboardButton(text=BTN_TODAY), KeyboardButton(text=BTN_REFRESH)],
+            [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_FIX)],
+            [KeyboardButton(text=BTN_MY), KeyboardButton(text=BTN_PENDING)],
+            [KeyboardButton(text=BTN_ON_REVIEW), KeyboardButton(text=BTN_PASSED)],
+            [KeyboardButton(text=BTN_FAILED), KeyboardButton(text=BTN_DEVS)],
+            [KeyboardButton(text=BTN_RELEASES), KeyboardButton(text=BTN_STATUS)],
+            [KeyboardButton(text=BTN_BY_DATE), KeyboardButton(text=BTN_TODAY)],
+            [KeyboardButton(text=BTN_REFRESH)],
         ],
         resize_keyboard=True,
         input_field_placeholder="Поиск: напишите текст, например leadgen",
@@ -57,25 +60,28 @@ def inline_main_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text=BTN_ADD, callback_data="act:add"),
+                InlineKeyboardButton(text=BTN_FIX, callback_data="act:fix"),
+            ],
+            [
                 InlineKeyboardButton(text=BTN_MY, callback_data="act:my"),
-            ],
-            [
                 InlineKeyboardButton(text=BTN_PENDING, callback_data="act:pending"),
+            ],
+            [
                 InlineKeyboardButton(text=BTN_ON_REVIEW, callback_data="act:on_review"),
-            ],
-            [
                 InlineKeyboardButton(text=BTN_PASSED, callback_data="act:passed"),
+            ],
+            [
                 InlineKeyboardButton(text=BTN_FAILED, callback_data="act:failed"),
-            ],
-            [
                 InlineKeyboardButton(text=BTN_DEVS, callback_data="devs"),
-                InlineKeyboardButton(text=BTN_RELEASES, callback_data="rels"),
             ],
             [
+                InlineKeyboardButton(text=BTN_RELEASES, callback_data="rels"),
                 InlineKeyboardButton(text=BTN_STATUS, callback_data="act:status"),
-                InlineKeyboardButton(text=BTN_BY_DATE, callback_data="date:start"),
             ],
-            [InlineKeyboardButton(text=BTN_REFRESH, callback_data="act:refresh")],
+            [
+                InlineKeyboardButton(text=BTN_BY_DATE, callback_data="date:start"),
+                InlineKeyboardButton(text=BTN_REFRESH, callback_data="act:refresh"),
+            ],
         ]
     )
 

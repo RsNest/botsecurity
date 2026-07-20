@@ -21,6 +21,8 @@ class Settings:
     admin_ids: frozenset[int]
     spreadsheet_id: str
     sheet_gid: str
+    spreadsheet_mirror_id: str
+    sheet_mirror_gid: str
     google_credentials_path: Path
     poll_interval_minutes: int
     reminder_hours: tuple[int, ...]
@@ -28,6 +30,11 @@ class Settings:
     cache_ttl_seconds: int
     force_refresh_cooldown: int
     sla_pending_days: int
+
+    @property
+    def mirror_enabled(self) -> bool:
+        mid = self.spreadsheet_mirror_id.strip()
+        return bool(mid) and mid != self.spreadsheet_id
 
     @classmethod
     def load(cls) -> Settings:
@@ -50,13 +57,18 @@ class Settings:
             int(h.strip()) for h in reminder_raw.split(",") if h.strip()
         )
 
+        sheet_gid = os.getenv("SHEET_GID", "684739217")
         return cls(
             telegram_token=token,
             admin_ids=admin_ids,
             spreadsheet_id=os.getenv(
                 "SPREADSHEET_ID", "1l-FSeC1mfIXqX-bvoKdfRV5txF0TDQ5aD-8GD8Ey-sw"
             ),
-            sheet_gid=os.getenv("SHEET_GID", "684739217"),
+            sheet_gid=sheet_gid,
+            spreadsheet_mirror_id=os.getenv(
+                "SPREADSHEET_MIRROR_ID", "1nRDstaHXnZ2Jf9IvgsAAvM8anro9JpjB"
+            ).strip(),
+            sheet_mirror_gid=os.getenv("SHEET_MIRROR_GID", sheet_gid).strip() or sheet_gid,
             google_credentials_path=creds_path,
             poll_interval_minutes=int(os.getenv("POLL_INTERVAL_MINUTES", "60")),
             reminder_hours=reminder_hours,

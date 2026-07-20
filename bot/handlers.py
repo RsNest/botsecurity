@@ -478,10 +478,26 @@ def setup_handlers(
             audit_note = f"\n⚠️ Проблем в реестре: {issue_count} — /audit"
         else:
             audit_note = "\n✅ Подозрительных строк не найдено."
+
+        reconcile = monitor.last_reconcile
+        mirror_note = ""
+        if reconcile and reconcile.mirror_enabled:
+            if reconcile.error:
+                mirror_note = f"\n⚠️ Зеркало: ошибка — {reconcile.error}"
+            else:
+                mirror_note = (
+                    f"\n🪞 Зеркало: канон {reconcile.canon_count}, "
+                    f"xls {reconcile.mirror_count}"
+                    f"\n   дописано в канон: {reconcile.appended_to_canon}, "
+                    f"в xls: {reconcile.appended_to_mirror}"
+                )
+        elif settings.spreadsheet_mirror_id:
+            mirror_note = "\n🪞 Зеркало выключено (совпадает с каноном или пусто)."
+
         await wait.edit_text(
             f"✅ Синхронизация завершена.\n"
             f"Строк: {len(monitor.last_rows)}\n"
-            f"Кэш обновлён.{audit_note}"
+            f"Кэш обновлён.{audit_note}{mirror_note}"
         )
 
     @dp.message(Command("audit"))

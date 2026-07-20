@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from bot.audit import AuditIssue, audit_rows
 from bot.config import FIELD_NAMES, settings
 from bot.models import ImageRow, RowChange, ScanResult
-from bot.sheets import SheetsClient
+from bot.sheets import ReconcileResult, SheetsClient
 from bot.storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,7 @@ class RegistryMonitor:
         self.storage = storage or Storage()
         self._last_rows: list[ImageRow] = []
         self._last_fetched_at: datetime | None = None
+        self._last_reconcile: ReconcileResult | None = None
 
     @property
     def last_rows(self) -> list[ImageRow]:
@@ -30,6 +31,10 @@ class RegistryMonitor:
     @property
     def last_fetched_at(self) -> datetime | None:
         return self._last_fetched_at
+
+    @property
+    def last_reconcile(self) -> ReconcileResult | None:
+        return self._last_reconcile
 
     def cache_age_label(self) -> str:
         if not self._last_fetched_at:
@@ -60,6 +65,21 @@ class RegistryMonitor:
     async def scan(self) -> ScanResult:
         fetched_at = datetime.now(timezone.utc)
         try:
+            self._last_reconcile = await self.sheets.reconcile_mirror()
+            if self._last_reconcile.error:
+                logger.warning(
+                    "Mirror reconcile error: %s", self._last_reconcile.error
+                )
+            elif self._last_reconcile.mirror_enabled and (
+                self._last_reconcile.appended_to_canon
+                or self._last_reconcile.appended_to_mirror
+            ):
+                logger.info(
+                    "Mirror reconcile: +%s canon, +%s mirror",
+                    self._last_reconcile.appended_to_canon,
+                    self._last_reconcile.appended_to_mirror,
+                )
+
             rows = await self.sheets.fetch_rows()
             snapshots = self.storage.all_snapshots()
             bootstrap = len(snapshots) == 0

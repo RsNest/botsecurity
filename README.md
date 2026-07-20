@@ -10,6 +10,7 @@
 - Публичные команды и **кнопки** (нижнее меню + inline)
 - Выборка по датам: прошли / не прошли проверку
 - **Отчёты ИБ**: пришлите архив сканирования (.7z/.zip) — бот определит вердикты и проставит статусы в таблице
+- Зеркалирование старого xls-реестра: `/add` и статусы пишутся в обе таблицы; `/sync` и hourly poll дописывают недостающие теги
 - Админ-команды для управления
 - Роли ИБ, история строк, CSV-экспорт, SLA-напоминания и настройки уведомлений
 
@@ -117,6 +118,8 @@ BOT_UID=1000                 # Linux Docker-хост: вывод команды 
 BOT_GID=1000                 # Linux Docker-хост: вывод команды id -g
 SPREADSHEET_ID=1l-FSeC1mfIXqX-bvoKdfRV5txF0TDQ5aD-8GD8Ey-sw
 SHEET_GID=684739217
+SPREADSHEET_MIRROR_ID=1nRDstaHXnZ2Jf9IvgsAAvM8anro9JpjB   # старый xls; пусто = выкл
+SHEET_MIRROR_GID=684739217
 GOOGLE_CREDENTIALS_PATH=credentials.json
 POLL_INTERVAL_MINUTES=60
 REMINDER_HOURS=10,13,16,18
@@ -132,8 +135,9 @@ SLA_PENDING_DAYS=3
 2. APIs & Services → Enable **Google Sheets API**
 3. Credentials → Create Service Account → Create Key (JSON)
 4. Сохранить как `credentials.json`
-5. Расшарить таблицу на email вида `xxx@project.iam.gserviceaccount.com`
-   — **Editor**, если хотите автопроставление статусов из отчётов ИБ (Reader хватит только для чтения)
+5. Расшарить **обе** таблицы (канон + xls-зеркало) на email вида
+   `xxx@project.iam.gserviceaccount.com` — **Editor**, если хотите запись
+   (/add, статусы, reconcile). Reader хватит только для чтения канона.
 
 **Вариант 2:** CSV export — если таблица доступна «Anyone with the link», бот попробует скачать без credentials (только чтение, без автостатусов).
 

@@ -1,8 +1,9 @@
 services:
   bot:
-    # deploy.sh sets BOT_IMAGE_TAG from VERSION after git pull (e.g. 1.0.4).
-    # Fallback "main" is the latest CI build if .env has no pin yet.
-    image: ghcr.io/rsnest/botsecurity:${BOT_IMAGE_TAG:-main}
+    # Default tag is updated by CI on every release (chore: release X.Y.Z).
+    # Do NOT set BOT_IMAGE_TAG in .env unless you intentionally want to freeze.
+    # Then: git pull && docker compose pull && docker compose up -d
+    image: ghcr.io/rsnest/botsecurity:${BOT_IMAGE_TAG:-1.0.4}
     # Локальная отладка без GHCR: раскомментируй и закомментируй image выше
     # build: .
     container_name: botsecurity

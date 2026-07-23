@@ -126,7 +126,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Commit VERSION bump and git tag
+      - name: Commit VERSION bump, compose default tag, and git tag
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           VERSION: ${{ steps.ver.outputs.version }}
@@ -136,12 +136,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if [ "$BUMPED" = "true" ]; then
-            git add VERSION
+          # Keep compose default in sync so VDS can: git pull && compose pull/up
+          sed -i -E \
+            "s|(image: ghcr\.io/rsnest/botsecurity:\$\{BOT_IMAGE_TAG:-)[^}]+(\})|\1${VERSION}\2|" \
+            docker-compose.yml
+
+          if [ "$BUMPED" = "true" ] || ! git diff --quiet -- docker-compose.yml; then
+            git add VERSION docker-compose.yml
             if ! git diff --staged --quiet; then
               git commit -m "chore: release ${VERSION}"
               git push origin "HEAD:${GITHUB_REF_NAME}"
-              echo "Pushed VERSION bump commit for ${VERSION}"
+              echo "Pushed release commit for ${VERSION}"
             fi
           fi
 

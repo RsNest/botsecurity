@@ -1,6 +1,6 @@
 services:
   bot:
-    image: ghcr.io/rsnest/botsecurity:latest
+    image: ghcr.io/rsnest/botsecurity:${BOT_IMAGE_TAG:-1.0.0}
     # Локальная отладка без GHCR: раскомментируй и закомментируй image выше
     # build: .
     container_name: botsecurity

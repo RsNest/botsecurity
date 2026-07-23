@@ -4,8 +4,10 @@ WORKDIR /app
 
 ARG GIT_SHA=local
 ARG BUILD_TIME=n/a
+ARG APP_VERSION=dev
 ENV GIT_SHA=$GIT_SHA
 ENV BUILD_TIME=$BUILD_TIME
+ENV APP_VERSION=$APP_VERSION
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -15,6 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 RUN addgroup --system bot && adduser --system --ingroup bot bot
 
+COPY --chown=bot:bot VERSION ./VERSION
 COPY --chown=bot:bot bot/ ./bot/
 
 RUN mkdir -p /app/data && chown -R bot:bot /app/data

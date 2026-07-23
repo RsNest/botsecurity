@@ -94,7 +94,8 @@
 
 ## Быстрый старт (Docker на VDS)
 
-Образ собирается в GitHub Actions и лежит в GHCR: `ghcr.io/rsnest/botsecurity:latest`.
+Образ собирается в GitHub Actions по git-тегу `vX.Y.Z` и лежит в GHCR:
+`ghcr.io/rsnest/botsecurity:X.Y.Z` (без плавающего `latest`).
 На слабой VDS **не билдим** — только pull.
 
 ```bash
@@ -102,7 +103,7 @@ git clone https://github.com/RsNest/botsecurity.git
 cd botsecurity
 
 cp .env.example .env
-nano .env
+nano .env   # в т.ч. BOT_IMAGE_TAG=1.0.0
 
 cp credentials.json.example credentials.json
 # расшарить таблицы на client_email сервисного аккаунта
@@ -115,17 +116,30 @@ sudo docker compose up -d
 sudo docker compose logs -f
 ```
 
-### Обновление бота после правок в репо
+### Релиз нового образа
 
-1. Пушишь в `main` → Actions сам собирает и пушит образ (~1–3 мин).
-2. На VDS:
+1. Поднять версию в файле `VERSION` (например `1.0.1`).
+2. Закоммитить и запушить в `main`.
+3. Поставить тег и запушить его:
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+4. Actions соберёт `ghcr.io/rsnest/botsecurity:1.0.1` (и `:1.0`).
+
+### Обновление бота на VDS
 
 ```bash
 cd /home/rudolf710/botsecurity
-git pull   # подтянуть compose/.env.example при необходимости
+git pull
+# в .env выставить BOT_IMAGE_TAG=1.0.1
 sudo docker compose pull
 sudo docker compose up -d
 ```
+
+Проверка: `/version` в Telegram — должен показать тот же semver, что и `BOT_IMAGE_TAG`.
 
 Локальная сборка на VDS больше не нужна (`build:` закомментирован в compose).
 
@@ -136,6 +150,7 @@ TELEGRAM_TOKEN=...           # от @BotFather
 ADMIN_IDS=145212489          # ваш Telegram user id
 BOT_UID=1000                 # Linux Docker-хост: вывод команды id -u
 BOT_GID=1000                 # Linux Docker-хост: вывод команды id -g
+BOT_IMAGE_TAG=1.0.0          # pinned GHCR tag (semver)
 SPREADSHEET_ID=1l-FSeC1mfIXqX-bvoKdfRV5txF0TDQ5aD-8GD8Ey-sw
 SHEET_GID=684739217
 SPREADSHEET_MIRROR_ID=1nRDstaHXnZ2Jf9IvgsAAvM8anro9JpjB   # старый xls; пусто = выкл

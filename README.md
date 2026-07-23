@@ -94,16 +94,19 @@
 
 ## Быстрый старт (Docker на VDS)
 
-Образ собирается в GitHub Actions по git-тегу `vX.Y.Z` и лежит в GHCR:
-`ghcr.io/rsnest/botsecurity:X.Y.Z` (без плавающего `latest`).
-На слабой VDS **не билдим** — только pull.
+Каждый push в `main` собирает образ в GHCR с тегами:
+- `main` — плавающий (для VDS, всегда актуальный билд)
+- `X.Y.Z` / `X.Y` — из файла `VERSION` (+ git-тег `vX.Y.Z`, если ещё нет)
+- `sha-…` — для отладки
+
+`latest` не используем. На слабой VDS **не билдим** — только pull.
 
 ```bash
 git clone https://github.com/RsNest/botsecurity.git
 cd botsecurity
 
 cp .env.example .env
-nano .env   # в т.ч. BOT_IMAGE_TAG=1.0.0
+nano .env   # BOT_IMAGE_TAG=main (по умолчанию)
 
 cp credentials.json.example credentials.json
 # расшарить таблицы на client_email сервисного аккаунта
@@ -116,30 +119,23 @@ sudo docker compose up -d
 sudo docker compose logs -f
 ```
 
-### Релиз нового образа
+### Релиз / новая версия
 
-1. Поднять версию в файле `VERSION` (например `1.0.1`).
-2. Закоммитить и запушить в `main`.
-3. Поставить тег и запушить его:
-
-```bash
-git tag v1.0.1
-git push origin v1.0.1
-```
-
-4. Actions соберёт `ghcr.io/rsnest/botsecurity:1.0.1` (и `:1.0`).
+1. При необходимости подними `VERSION` (например `1.0.3`) в коммите.
+2. Пуш в `main` → Actions сам соберёт `:main`, `:1.0.3`, `:1.0` и поставит git-тег `v1.0.3`.
 
 ### Обновление бота на VDS
 
+После того как Actions зелёный (~1–3 мин):
+
 ```bash
 cd /home/rudolf710/botsecurity
-git pull
-# в .env выставить BOT_IMAGE_TAG=1.0.1
-sudo docker compose pull
-sudo docker compose up -d
+./deploy.sh
+# или: git pull && docker compose pull && docker compose up -d
 ```
 
-Проверка: `/version` в Telegram — должен показать тот же semver, что и `BOT_IMAGE_TAG`.
+В `.env` должно быть `BOT_IMAGE_TAG=main` (или строки нет — compose возьмёт `main` сам).
+Проверка: `/version` — новый git sha / версия из `VERSION`.
 
 Локальная сборка на VDS больше не нужна (`build:` закомментирован в compose).
 
@@ -150,7 +146,7 @@ TELEGRAM_TOKEN=...           # от @BotFather
 ADMIN_IDS=145212489          # ваш Telegram user id
 BOT_UID=1000                 # Linux Docker-хост: вывод команды id -u
 BOT_GID=1000                 # Linux Docker-хост: вывод команды id -g
-BOT_IMAGE_TAG=1.0.0          # pinned GHCR tag (semver)
+BOT_IMAGE_TAG=main              # плавающий тег; или pin 1.0.2
 SPREADSHEET_ID=1l-FSeC1mfIXqX-bvoKdfRV5txF0TDQ5aD-8GD8Ey-sw
 SHEET_GID=684739217
 SPREADSHEET_MIRROR_ID=   # пусто = выкл; только native Google Sheet (не .xls)

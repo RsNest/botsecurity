@@ -1,6 +1,8 @@
 services:
   bot:
-    image: ghcr.io/rsnest/botsecurity:${BOT_IMAGE_TAG:-1.0.0}
+    # Default: floating "main" — always the newest build from GitHub Actions.
+    # Pin a release with BOT_IMAGE_TAG=1.0.2 in .env if you need a freeze.
+    image: ghcr.io/rsnest/botsecurity:${BOT_IMAGE_TAG:-main}
     # Локальная отладка без GHCR: раскомментируй и закомментируй image выше
     # build: .
     container_name: botsecurity

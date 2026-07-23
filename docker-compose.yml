@@ -1,9 +1,9 @@
 services:
   bot:
-    # Default tag is updated by CI on every release (chore: release X.Y.Z).
-    # Do NOT set BOT_IMAGE_TAG in .env unless you intentionally want to freeze.
-    # Then: git pull && docker compose pull && docker compose up -d
-    image: ghcr.io/rsnest/botsecurity:${BOT_IMAGE_TAG:-1.0.4}
+    # Image tag is rewritten by CI on every release (chore: release X.Y.Z).
+    # VDS: git pull && docker compose pull && docker compose up -d
+    # Do not set BOT_IMAGE_TAG in .env.
+    image: ghcr.io/rsnest/botsecurity:1.0.5
     # Локальная отладка без GHCR: раскомментируй и закомментируй image выше
     # build: .
     container_name: botsecurity

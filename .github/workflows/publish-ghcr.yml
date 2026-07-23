@@ -136,18 +136,30 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Keep compose default in sync so VDS can: git pull && compose pull/up
-          sed -i -E \
-            "s|(image: ghcr\.io/rsnest/botsecurity:\$\{BOT_IMAGE_TAG:-)[^}]+(\})|\1${VERSION}\2|" \
-            docker-compose.yml
+          # Keep compose image tag in sync so VDS needs only git pull + compose up.
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          version = os.environ["VERSION"]
+          path = Path("docker-compose.yml")
+          text = path.read_text(encoding="utf-8")
+          new, n = re.subn(
+              r"(image:\s*ghcr\.io/rsnest/botsecurity:)[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.]+)?",
+              rf"\g<1>{version}",
+              text,
+              count=1,
+          )
+          if n != 1:
+              raise SystemExit(f"failed to update compose image tag (replacements={n})")
+          path.write_text(new, encoding="utf-8")
+          print(f"compose image -> ghcr.io/rsnest/botsecurity:{version}")
+          PY
 
-          if [ "$BUMPED" = "true" ] || ! git diff --quiet -- docker-compose.yml; then
-            git add VERSION docker-compose.yml
-            if ! git diff --staged --quiet; then
-              git commit -m "chore: release ${VERSION}"
-              git push origin "HEAD:${GITHUB_REF_NAME}"
-              echo "Pushed release commit for ${VERSION}"
-            fi
+          git add VERSION docker-compose.yml
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: release ${VERSION}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+            echo "Pushed release commit for ${VERSION}"
           fi
 
           TAG="v${VERSION}"

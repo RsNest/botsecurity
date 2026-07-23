@@ -95,19 +95,22 @@
 ## Быстрый старт (Docker на VDS)
 
 Каждый push в `main` (кроме служебного `chore: release`):
-1. CI сам поднимает patch в `VERSION` (`1.0.3` → `1.0.4`)
-2. Собирает образ `ghcr.io/rsnest/botsecurity:1.0.4` (+ `:1.0`, `:main`, `sha-…`)
-3. Коммитит `VERSION` и ставит git-тег `v1.0.4`
+1. CI сам поднимает patch в `VERSION` (`1.0.4` → `1.0.5`)
+2. Собирает образ `ghcr.io/rsnest/botsecurity:1.0.5`
+3. Коммитит `VERSION` + default-тег в `docker-compose.yml` и git-тег `v1.0.5`
 
-На VDS после зелёного Actions:
+На VDS после зелёного Actions — **без скриптов и без правки .env**:
 
 ```bash
 cd /home/rudolf710/botsecurity
-./deploy.sh
+git pull
+docker compose pull
+docker compose up -d
 ```
 
-`deploy.sh` делает `git pull`, читает `VERSION`, пишет `BOT_IMAGE_TAG` в `.env`,
-pull/up — в `docker ps` будет `ghcr.io/rsnest/botsecurity:1.0.4`.
+Тег образа прописан в `docker-compose.yml` (CI меняет его сам).
+Если раньше ставил `BOT_IMAGE_TAG` в `.env` — удали строку один раз:
+`sed -i '/^BOT_IMAGE_TAG=/d' .env`
 
 ```bash
 git clone https://github.com/RsNest/botsecurity.git
@@ -122,8 +125,9 @@ cp credentials.json.example credentials.json
 # один раз: логин в GHCR (PAT или gh auth token с read:packages)
 echo YOUR_GITHUB_TOKEN | sudo docker login ghcr.io -u RsNest --password-stdin
 
-chmod +x deploy.sh
-./deploy.sh
+git pull
+docker compose pull
+docker compose up -d
 sudo docker compose logs -f
 ```
 
@@ -138,7 +142,7 @@ TELEGRAM_TOKEN=...           # от @BotFather
 ADMIN_IDS=145212489          # ваш Telegram user id
 BOT_UID=1000                 # Linux Docker-хост: вывод команды id -u
 BOT_GID=1000                 # Linux Docker-хост: вывод команды id -g
-BOT_IMAGE_TAG=1.0.3             # выставляет ./deploy.sh из VERSION
+# BOT_IMAGE_TAG=              # не задавай — тег берётся из docker-compose.yml
 SPREADSHEET_ID=1l-FSeC1mfIXqX-bvoKdfRV5txF0TDQ5aD-8GD8Ey-sw
 SHEET_GID=684739217
 SPREADSHEET_MIRROR_ID=   # пусто = выкл; только native Google Sheet (не .xls)

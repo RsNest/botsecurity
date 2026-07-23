@@ -253,16 +253,40 @@ def format_metrics(metrics: dict[str, float | int]) -> str:
     )
 
 
+def _report_count_suffix(r) -> str:
+    counts = []
+    if r.critical:
+        counts.append(f"crit {r.critical}")
+    if r.high:
+        counts.append(f"high {r.high}")
+    if r.sensitive_critical or r.sensitive_high:
+        counts.append(f"secrets {r.sensitive_critical + r.sensitive_high}")
+    if r.malware_critical or r.malware_high:
+        counts.append(f"malware {r.malware_critical + r.malware_high}")
+    if r.misconfig_critical or r.misconfig_high:
+        counts.append(f"misconfig {r.misconfig_critical + r.misconfig_high}")
+    return f" ({', '.join(counts)})" if counts else ""
+
+
 def format_report_preview(matches, can_write: bool) -> str:
     """Preview of parsed IB scan reports and their proposed verdicts."""
     failed = [m for m in matches if not m.report.passed]
     passed = [m for m in matches if m.report.passed]
     unmatched = [m for m in matches if m.row is None]
     uncertain = [m for m in matches if is_low_confidence(m)]
+    sources = {m.report.source for m in matches}
+    source_label = (
+        "Kaspersky HTML"
+        if sources == {"kaspersky"}
+        else "Aqua JSON"
+        if sources == {"aqua"}
+        else "смешанный формат"
+    )
 
     parts = [
         "🛡 <b>Отчёт сканирования ИБ</b>",
-        f"Образов в отчёте: {len(matches)} · "
+        f"Формат: {source_label}",
+        f"Образов: {len(matches)} · "
         f"✅ прошло: {len(passed)} · ❌ не прошло: {len(failed)}",
         "",
     ]
@@ -270,36 +294,38 @@ def format_report_preview(matches, can_write: bool) -> str:
     def line(m) -> str:
         r = m.report
         icon = "✅" if r.passed else "❌"
-        counts = []
-        if r.critical:
-            counts.append(f"crit {r.critical}")
-        if r.high:
-            counts.append(f"high {r.high}")
-        suffix = f" ({', '.join(counts)})" if counts else ""
-        row_ref = f" → стр. {m.row.row_number}" if m.row else " → ⚠️ не найден в таблице"
-        if m.row and is_low_confidence(m):
-            row_ref += " ⚠️ проверьте сопоставление"
+        suffix = _report_count_suffix(r)
+        if m.row:
+            row_ref = f" → стр. {m.row.row_number}"
+            if is_low_confidence(m):
+                row_ref += " ⚠️ проверьте сопоставление"
+        else:
+            row_ref = " → нет в таблице (можно добавить)"
         return f"{icon} <code>{esc(r.short_name)}</code>{suffix}{row_ref}"
 
+    # Keep overview short: show failed first, then a compact passed summary.
     if failed:
         parts.append("<b>Не прошли проверку:</b>")
-        parts.extend(line(m) for m in failed)
+        show = failed[:40]
+        parts.extend(line(m) for m in show)
+        if len(failed) > len(show):
+            parts.append(f"… и ещё {len(failed) - len(show)}")
         parts.append("")
     if passed:
-        parts.append("<b>Прошли проверку:</b>")
-        parts.extend(line(m) for m in passed)
+        parts.append(f"<b>Прошли проверку:</b> {len(passed)}")
+        if len(passed) <= 15:
+            parts.extend(line(m) for m in passed)
         parts.append("")
     if unmatched:
         parts.append(
-            f"⚠️ Не сопоставлено с таблицей: {len(unmatched)} "
-            "(статус для них проставлен не будет)."
+            f"📌 Нет в таблице: {len(unmatched)} — при записи можно добавить новые строки."
         )
         parts.append("")
     if uncertain:
         parts.append(
             f"⚠️ Сомнительное сопоставление: {len(uncertain)} "
-            f"(score &lt; {LOW_CONFIDENCE_THRESHOLD}) — при применении "
-            "эти строки будут пропущены, проверьте вручную."
+            f"(score &lt; {LOW_CONFIDENCE_THRESHOLD}) — при обновлении "
+            "эти строки будут пропущены."
         )
         parts.append("")
 
@@ -309,12 +335,89 @@ def format_report_preview(matches, can_write: bool) -> str:
     if not can_write:
         parts.append(
             "🔒 <b>Запись в таблицу недоступна</b> — нет credentials.json "
-            "с правами редактора. Могу только показать вердикты."
+            "с правами редактора. Можно только смотреть вердикты и детали."
         )
-    elif applicable:
+    else:
         parts.append(
-            f"Нажмите кнопку, чтобы проставить статусы в таблице ({applicable} строк)."
+            "Можно открыть детали по образам или записать результаты в таблицу "
+            f"(обновить {applicable}, добавить {len(unmatched)})."
         )
+    return "\n".join(parts)
+
+
+def format_report_image_detail(match, index: int, total: int) -> str:
+    """Detailed findings for one image from a parsed scan archive."""
+    r = match.report
+    icon = "✅" if r.passed else "❌"
+    parts = [
+        f"{icon} <b>{esc(r.short_name)}</b>",
+        f"<code>{esc(r.image)}</code>",
+        f"Вердикт: <b>{esc(r.verdict_status)}</b>",
+        f"Образ {index + 1} из {total}",
+        "",
+        f"Vulns: crit {r.critical} · high {r.high} · med {r.medium} · low {r.low}",
+    ]
+    extras = []
+    if r.sensitive_critical or r.sensitive_high:
+        extras.append(f"Secrets: crit {r.sensitive_critical} · high {r.sensitive_high}")
+    if r.malware_critical or r.malware_high:
+        extras.append(f"Malware: crit {r.malware_critical} · high {r.malware_high}")
+    if r.misconfig_critical or r.misconfig_high:
+        extras.append(f"Misconfig: crit {r.misconfig_critical} · high {r.misconfig_high}")
+    parts.extend(extras)
+
+    if match.row:
+        conf = "⚠️ сомнительно" if is_low_confidence(match) else "ок"
+        parts.append(
+            f"Таблица: стр. {match.row.row_number} · "
+            f"<code>{esc(match.row.tag)}</code> ({conf})"
+        )
+    else:
+        parts.append("Таблица: нет совпадения — при записи будет добавлена новая строка.")
+
+    findings = r.findings
+    if findings:
+        parts.append("")
+        parts.append("<b>Critical / High (фрагмент):</b>")
+        kind_label = {
+            "vulnerability": "CVE",
+            "malware": "malware",
+            "sensitive": "secret",
+            "misconfiguration": "misconfig",
+        }
+        for f in findings[:40]:
+            label = kind_label.get(f.kind, f.kind)
+            res = f" · {esc(f.resource)}" if f.resource else ""
+            parts.append(
+                f"• [{esc(f.severity)}] {esc(label)} <code>{esc(f.title)}</code>{res}"
+            )
+        if len(findings) >= 40 or (
+            r.critical + r.high + r.sensitive_critical + r.sensitive_high
+            + r.malware_critical + r.malware_high + r.misconfig_critical + r.misconfig_high
+            > len(findings)
+        ):
+            parts.append("… список усечён; полный отчёт — в HTML/JSON архива.")
+    elif not r.passed:
+        parts.append("")
+        parts.append("Детальный список findings в отчёте пуст или не распознан.")
+    return "\n".join(parts)
+
+
+def format_report_write_prompt(matches, mode_hint: str = "") -> str:
+    matched = sum(1 for m in matches if m.row is not None and not is_low_confidence(m))
+    unmatched = sum(1 for m in matches if m.row is None)
+    uncertain = sum(1 for m in matches if is_low_confidence(m))
+    parts = [
+        "💾 <b>Добавить результаты в таблицу?</b>",
+        "",
+        f"Обновить найденные строки: {matched}",
+        f"Добавить новые (нет в таблице): {unmatched}",
+    ]
+    if uncertain:
+        parts.append(f"Пропустить сомнительные сопоставления: {uncertain}")
+    if mode_hint:
+        parts.append("")
+        parts.append(mode_hint)
     return "\n".join(parts)
 
 

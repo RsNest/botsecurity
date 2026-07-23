@@ -219,18 +219,149 @@ def inline_developers_keyboard(devs: list[tuple[str, int, int]]) -> InlineKeyboa
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def inline_report_confirm(token: str) -> InlineKeyboardMarkup:
+def inline_report_menu(
+    token: str,
+    *,
+    failed: int,
+    total: int,
+    can_write: bool,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if failed:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"❌ Непрошедшие ({failed})",
+                    callback_data=f"rep:fail:{token}:0",
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=f"📋 Все образы ({total})",
+                callback_data=f"rep:all:{token}:0",
+            )
+        ]
+    )
+    if can_write:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="💾 Добавить результаты в таблицу?",
+                    callback_data=f"rep:ask:{token}",
+                )
+            ]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="❌ Закрыть", callback_data=f"rep:cancel:{token}")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def inline_report_write_options(token: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="✅ Проставить статусы в таблице",
-                    callback_data=f"rep:apply:{token}",
+                    text="✅ Да: обновить + добавить новые",
+                    callback_data=f"rep:write:{token}:all",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✅ Только найденные в таблице",
+                    callback_data=f"rep:write:{token}:matched",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="« Назад", callback_data=f"rep:menu:{token}"
                 )
             ],
             [
                 InlineKeyboardButton(
                     text="❌ Отмена", callback_data=f"rep:cancel:{token}"
+                )
+            ],
+        ]
+    )
+
+
+def inline_report_confirm(token: str) -> InlineKeyboardMarkup:
+    """Backward-compatible alias: ask write options."""
+    return inline_report_write_options(token)
+
+
+def inline_report_list(
+    token: str,
+    *,
+    mode: str,
+    page: int,
+    pages: int,
+    items: list[tuple[int, str]],
+) -> InlineKeyboardMarkup:
+    """items: (match_index, button_label)."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, label in items:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label[:60],
+                    callback_data=f"rep:img:{token}:{idx}",
+                )
+            ]
+        )
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton(
+                text="⬅️",
+                callback_data=f"rep:{mode}:{token}:{page - 1}",
+            )
+        )
+    if pages > 1:
+        nav.append(
+            InlineKeyboardButton(
+                text=f"{page + 1}/{pages}",
+                callback_data="noop",
+            )
+        )
+    if page + 1 < pages:
+        nav.append(
+            InlineKeyboardButton(
+                text="➡️",
+                callback_data=f"rep:{mode}:{token}:{page + 1}",
+            )
+        )
+    if nav:
+        rows.append(nav)
+    rows.append(
+        [
+            InlineKeyboardButton(text="« К сводке", callback_data=f"rep:menu:{token}"),
+            InlineKeyboardButton(text="❌", callback_data=f"rep:cancel:{token}"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def inline_report_detail(token: str, index: int, mode: str = "fail") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="« К списку",
+                    callback_data=f"rep:{mode}:{token}:0",
+                ),
+                InlineKeyboardButton(
+                    text="« К сводке",
+                    callback_data=f"rep:menu:{token}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💾 В таблицу?",
+                    callback_data=f"rep:ask:{token}",
                 )
             ],
         ]

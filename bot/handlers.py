@@ -35,7 +35,9 @@ from bot.formatters import (
     format_help,
     format_metrics,
     format_releases_list,
+    format_report_image_detail,
     format_report_preview,
+    format_report_write_prompt,
     format_row_detail,
     format_rows_page_numbered,
     format_status_summary,
@@ -65,7 +67,10 @@ from bot.keyboards import (
     inline_main_menu,
     inline_paginated_menu,
     inline_releases_keyboard,
-    inline_report_confirm,
+    inline_report_detail,
+    inline_report_list,
+    inline_report_menu,
+    inline_report_write_options,
     main_reply_keyboard,
 )
 from bot.models import ImageRow
@@ -666,6 +671,172 @@ def setup_handlers(
 
     # --- IB scan report archives -------------------------------------------
 
+    REPORT_LIST_PAGE = 8
+
+    def _report_indices(matches: list[ReportMatch], mode: str) -> list[int]:
+        if mode == "fail":
+            return [i for i, m in enumerate(matches) if not m.report.passed]
+        return list(range(len(matches)))
+
+    def _report_list_keyboard(
+        token: str, matches: list[ReportMatch], mode: str, page: int
+    ) -> tuple[str, InlineKeyboardMarkup]:
+        indices = _report_indices(matches, mode)
+        pages = max(1, (len(indices) + REPORT_LIST_PAGE - 1) // REPORT_LIST_PAGE)
+        page = max(0, min(page, pages - 1))
+        start = page * REPORT_LIST_PAGE
+        chunk = indices[start : start + REPORT_LIST_PAGE]
+        items: list[tuple[int, str]] = []
+        for idx in chunk:
+            m = matches[idx]
+            icon = "✅" if m.report.passed else "❌"
+            name = m.report.short_name
+            if len(name) > 40:
+                name = name[:37] + "…"
+            items.append((idx, f"{icon} {name}"))
+        title = "Непрошедшие образы" if mode == "fail" else "Все образы отчёта"
+        text = (
+            f"🛡 <b>{title}</b>\n"
+            f"Стр. {page + 1}/{pages} · всего {len(indices)}\n"
+            "Нажмите образ, чтобы увидеть детали."
+        )
+        return text, inline_report_list(
+            token, mode=mode, page=page, pages=pages, items=items
+        )
+
+    def _store_pending_report(
+        owner_id: int, matches: list[ReportMatch]
+    ) -> str:
+        token = secrets.token_hex(4)
+        _pending_reports[token] = PendingReport(
+            owner_id=owner_id,
+            created_at=datetime.now(),
+            matches=matches,
+            row_hashes={
+                m.row.row_number: m.row.content_hash()
+                for m in matches
+                if m.row
+            },
+        )
+        while len(_pending_reports) > 5:
+            _pending_reports.pop(next(iter(_pending_reports)))
+        return token
+
+    async def _apply_report_write(
+        message: Message,
+        pending: PendingReport,
+        token: str,
+        mode: str,
+    ) -> None:
+        """mode: all | matched"""
+        matches = pending.matches
+        await safe_edit(message, "⏳ Записываю результаты в таблицу…")
+
+        ok, err = await _load_data(monitor, bot, storage, force=True)
+        if not ok:
+            await safe_edit(
+                message,
+                f"❌ Не удалось обновить таблицу: {err}",
+                reply_markup=inline_report_write_options(token),
+            )
+            return
+
+        current = {row.row_number: row for row in monitor.last_rows}
+        stale = [
+            number
+            for number, digest in pending.row_hashes.items()
+            if number not in current or current[number].content_hash() != digest
+        ]
+        if stale:
+            _pending_reports.pop(token, None)
+            await safe_edit(
+                message,
+                "⚠️ Строки изменились после предпросмотра ("
+                + ", ".join(map(str, stale[:10]))
+                + "). Отчёт не применён — загрузите его повторно.",
+            )
+            return
+
+        today_str = date.today().strftime("%d.%m.%Y")
+        updates: list[tuple[int, str, str]] = []
+        skipped = 0
+        for m in matches:
+            if m.row is None:
+                continue
+            if is_low_confidence(m):
+                skipped += 1
+                continue
+            check_date = today_str if not m.row.check_date else ""
+            updates.append((m.row.row_number, m.report.verdict_status, check_date))
+
+        append_entries: list[dict] = []
+        if mode == "all":
+            for m in matches:
+                if m.row is not None:
+                    continue
+                append_entries.append(
+                    {
+                        "transfer_date": today_str,
+                        "developer": "ИБ-отчёт",
+                        "tag": m.report.image,
+                        "release": "",
+                        "status": m.report.verdict_status,
+                        "check_date": today_str,
+                    }
+                )
+
+        if not updates and not append_entries:
+            await safe_edit(
+                message,
+                "❌ Нечего записывать: нет надёжных совпадений"
+                + (" и нет новых образов для добавления." if mode == "all" else "."),
+                reply_markup=inline_report_write_options(token),
+            )
+            return
+
+        try:
+            if updates:
+                await monitor.sheets.update_statuses(updates)
+            appended_rows: list[int] = []
+            if append_entries:
+                appended_rows = await monitor.sheets.append_registry_rows(append_entries)
+        except Exception as exc:
+            logger.exception("Failed to write report results to sheet")
+            await safe_edit(
+                message,
+                f"❌ Не удалось записать в таблицу:\n<code>{exc}</code>\n\n"
+                "Проверьте, что сервисный аккаунт имеет права редактора.",
+                reply_markup=inline_report_write_options(token),
+            )
+            return
+
+        _pending_reports.pop(token, None)
+        applied = [m for m in matches if m.row and not is_low_confidence(m)]
+        failed_count = sum(1 for m in applied if not m.report.passed)
+        passed_count = sum(1 for m in applied if m.report.passed)
+        append_failed = sum(
+            1 for e in append_entries if e["status"] == "Не прошло проверку"
+        )
+        append_passed = len(append_entries) - append_failed
+        lines = [
+            "✅ <b>Результаты записаны в таблицу</b>",
+            f"Обновлено строк: {len(updates)} "
+            f"(✅ {passed_count} · ❌ {failed_count})",
+        ]
+        if append_entries:
+            lines.append(
+                f"Добавлено новых: {len(append_entries)} "
+                f"(✅ {append_passed} · ❌ {append_failed})"
+            )
+            if appended_rows:
+                preview = ", ".join(map(str, appended_rows[:8]))
+                more = f" …+{len(appended_rows) - 8}" if len(appended_rows) > 8 else ""
+                lines.append(f"Новые строки: {preview}{more}")
+        if skipped:
+            lines.append(f"⚠️ Пропущено (сомнительное сопоставление): {skipped}")
+        await safe_edit(message, "\n".join(lines))
+        await _load_data(monitor, bot, storage, force=True, notify_changes=True)
+
     @dp.message(F.document)
     async def handle_report_archive(message: Message) -> None:
         doc = message.document
@@ -705,28 +876,27 @@ def setup_handlers(
             return
 
         ok, err = await _load_data(monitor, bot, storage, force=True)
-        if not ok:
-            await safe_edit(wait, f"❌ Архив разобран, но таблица недоступна:\n{err}")
-            return
-
-        matches = match_reports(reports, monitor.last_rows)
-        can_write = monitor.sheets.can_write
-        text = format_report_preview(matches, can_write)
-
-        applicable = [m for m in matches if m.row is not None]
-        kb = None
-        if can_write and applicable:
-            token = secrets.token_hex(4)
-            _pending_reports[token] = PendingReport(
-                owner_id=message.from_user.id,
-                created_at=datetime.now(),
-                matches=matches,
-                row_hashes={m.row.row_number: m.row.content_hash() for m in matches if m.row},
+        sheet_note = ""
+        if ok:
+            matches = match_reports(reports, monitor.last_rows)
+            can_write = monitor.sheets.can_write
+        else:
+            matches = [ReportMatch(report=r, row=None) for r in reports]
+            can_write = False
+            sheet_note = (
+                f"⚠️ Таблица недоступна: {err}\n"
+                "Показываю вердикты без записи.\n\n"
             )
-            # Keep only the few most recent pending reports
-            while len(_pending_reports) > 5:
-                _pending_reports.pop(next(iter(_pending_reports)))
-            kb = inline_report_confirm(token)
+
+        text = sheet_note + format_report_preview(matches, can_write)
+        token = _store_pending_report(message.from_user.id, matches)
+        failed_n = sum(1 for m in matches if not m.report.passed)
+        kb = inline_report_menu(
+            token,
+            failed=failed_n,
+            total=len(matches),
+            can_write=can_write and ok,
+        )
         await safe_edit(wait, text, reply_markup=kb)
 
     @dp.message(F.photo)
@@ -739,11 +909,12 @@ def setup_handlers(
 
     @dp.callback_query(F.data.startswith("rep:"))
     async def cb_report(callback: CallbackQuery) -> None:
-        parts = callback.data.split(":")
-        if len(parts) != 3:
+        parts = (callback.data or "").split(":")
+        if len(parts) < 3:
             await callback.answer("Ошибка")
             return
-        action, token = parts[1], parts[2]
+        action = parts[1]
+        token = parts[2]
 
         if not callback.from_user or not _can_apply_reports(storage, callback.from_user.id):
             await callback.answer("Только для администратора или оператора ИБ", show_alert=True)
@@ -756,90 +927,112 @@ def setup_handlers(
             if callback.message:
                 await safe_edit(
                     callback.message,
-                    "❌ Проставление статусов отменено. Таблица не изменена.",
+                    "❌ Работа с отчётом закрыта. Таблица не изменена.",
                 )
             return
 
-        if pending is None or pending.owner_id != callback.from_user.id or datetime.now() - pending.created_at > REPORT_CONFIRM_TTL:
+        if (
+            pending is None
+            or pending.owner_id != callback.from_user.id
+            or datetime.now() - pending.created_at > REPORT_CONFIRM_TTL
+        ):
             _pending_reports.pop(token, None)
             await callback.answer(
                 "Этот отчёт устарел, пришлите архив ещё раз.", show_alert=True
             )
             return
+
         matches = pending.matches
+        can_write = monitor.sheets.can_write
 
-        await callback.answer("Записываю…")
-        if callback.message:
-            await safe_edit(callback.message, "⏳ Проставляю статусы в таблице…")
-
-        # Prevent a preview from overwriting a row changed manually after the
-        # report was parsed.  The administrator can upload the report again.
-        ok, err = await _load_data(monitor, bot, storage, force=True)
-        if not ok:
-            await safe_edit(callback.message, f"❌ Не удалось обновить таблицу: {err}")
-            return
-        current = {row.row_number: row for row in monitor.last_rows}
-        stale = [number for number, digest in pending.row_hashes.items() if number not in current or current[number].content_hash() != digest]
-        if stale:
-            _pending_reports.pop(token, None)
-            await safe_edit(callback.message, "⚠️ Строки изменились после предпросмотра (" + ", ".join(map(str, stale[:10])) + "). Отчёт не применён — загрузите его повторно.")
-            return
-
-        today_str = date.today().strftime("%d.%m.%Y")
-        updates = []
-        skipped = 0
-        for m in matches:
-            if m.row is None:
-                continue
-            if is_low_confidence(m):
-                skipped += 1
-                continue
-            check_date = today_str if not m.row.check_date else ""
-            updates.append((m.row.row_number, m.report.verdict_status, check_date))
-
-        if not updates:
-            await safe_edit(
-                callback.message,
-                "❌ Нет строк для безопасного применения "
-                "(все сопоставления сомнительные или не найдены).",
-                reply_markup=inline_report_confirm(token),
-            )
+        if action == "menu":
+            await callback.answer()
+            if callback.message:
+                failed_n = sum(1 for m in matches if not m.report.passed)
+                await safe_edit(
+                    callback.message,
+                    format_report_preview(matches, can_write),
+                    reply_markup=inline_report_menu(
+                        token,
+                        failed=failed_n,
+                        total=len(matches),
+                        can_write=can_write,
+                    ),
+                )
             return
 
-        try:
-            await monitor.sheets.update_statuses(updates)
-        except Exception as exc:
-            logger.exception("Failed to write statuses to sheet")
+        if action in {"fail", "all"}:
+            await callback.answer()
+            try:
+                page = int(parts[3]) if len(parts) > 3 else 0
+            except ValueError:
+                page = 0
+            if callback.message:
+                text, kb = _report_list_keyboard(token, matches, action, page)
+                await safe_edit(callback.message, text, reply_markup=kb)
+            return
+
+        if action == "img":
+            try:
+                idx = int(parts[3]) if len(parts) > 3 else -1
+            except ValueError:
+                idx = -1
+            if idx < 0 or idx >= len(matches):
+                await callback.answer("Образ не найден", show_alert=True)
+                return
+            await callback.answer()
+            if callback.message:
+                mode = "fail" if not matches[idx].report.passed else "all"
+                await safe_edit(
+                    callback.message,
+                    format_report_image_detail(matches[idx], idx, len(matches)),
+                    reply_markup=inline_report_detail(token, idx, mode=mode),
+                )
+            return
+
+        if action == "ask":
+            if not can_write:
+                await callback.answer(
+                    "Запись недоступна: нет credentials.json", show_alert=True
+                )
+                return
+            await callback.answer()
             if callback.message:
                 await safe_edit(
                     callback.message,
-                    f"❌ Не удалось записать в таблицу:\n<code>{exc}</code>\n\n"
-                    "Проверьте, что сервисный аккаунт имеет права редактора.",
-                    reply_markup=inline_report_confirm(token),
+                    format_report_write_prompt(matches),
+                    reply_markup=inline_report_write_options(token),
                 )
             return
 
-        _pending_reports.pop(token, None)
-        applied = [
-            m for m in matches
-            if m.row and not is_low_confidence(m)
-        ]
-        failed_count = sum(1 for m in applied if not m.report.passed)
-        passed_count = sum(1 for m in applied if m.report.passed)
-        if callback.message:
-            lines = [
-                "✅ <b>Статусы проставлены в таблице</b>",
-                f"✅ Прошло проверку: {passed_count}",
-                f"❌ Не прошло проверку: {failed_count}",
-                f"Всего обновлено строк: {len(updates)}",
-            ]
-            if skipped:
-                lines.append(
-                    f"⚠️ Пропущено (сомнительное сопоставление): {skipped}"
+        if action == "write":
+            mode = parts[3] if len(parts) > 3 else "matched"
+            if mode not in {"all", "matched"}:
+                await callback.answer("Ошибка")
+                return
+            if not can_write:
+                await callback.answer(
+                    "Запись недоступна: нет credentials.json", show_alert=True
                 )
-            await safe_edit(callback.message, "\n".join(lines))
-        # Refresh the cache and notify subscribers through the usual diff flow.
-        await _load_data(monitor, bot, storage, force=True, notify_changes=True)
+                return
+            await callback.answer("Записываю…")
+            if callback.message:
+                await _apply_report_write(callback.message, pending, token, mode)
+            return
+
+        # Legacy alias
+        if action == "apply":
+            if not can_write:
+                await callback.answer(
+                    "Запись недоступна: нет credentials.json", show_alert=True
+                )
+                return
+            await callback.answer("Записываю…")
+            if callback.message:
+                await _apply_report_write(callback.message, pending, token, "matched")
+            return
+
+        await callback.answer("Ошибка")
 
     # --- Callbacks ---
 

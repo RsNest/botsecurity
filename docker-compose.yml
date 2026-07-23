@@ -1,7 +1,7 @@
 services:
   bot:
-    # Default: floating "main" — always the newest build from GitHub Actions.
-    # Pin a release with BOT_IMAGE_TAG=1.0.2 in .env if you need a freeze.
+    # deploy.sh sets BOT_IMAGE_TAG from VERSION after git pull (e.g. 1.0.4).
+    # Fallback "main" is the latest CI build if .env has no pin yet.
     image: ghcr.io/rsnest/botsecurity:${BOT_IMAGE_TAG:-main}
     # Локальная отладка без GHCR: раскомментируй и закомментируй image выше
     # build: .

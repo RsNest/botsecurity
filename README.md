@@ -94,19 +94,27 @@
 
 ## Быстрый старт (Docker на VDS)
 
-Каждый push в `main` собирает образ в GHCR с тегами:
-- `main` — плавающий (для VDS, всегда актуальный билд)
-- `X.Y.Z` / `X.Y` — из файла `VERSION` (+ git-тег `vX.Y.Z`, если ещё нет)
-- `sha-…` — для отладки
+Каждый push в `main` (кроме служебного `chore: release`):
+1. CI сам поднимает patch в `VERSION` (`1.0.3` → `1.0.4`)
+2. Собирает образ `ghcr.io/rsnest/botsecurity:1.0.4` (+ `:1.0`, `:main`, `sha-…`)
+3. Коммитит `VERSION` и ставит git-тег `v1.0.4`
 
-`latest` не используем. На слабой VDS **не билдим** — только pull.
+На VDS после зелёного Actions:
+
+```bash
+cd /home/rudolf710/botsecurity
+./deploy.sh
+```
+
+`deploy.sh` делает `git pull`, читает `VERSION`, пишет `BOT_IMAGE_TAG` в `.env`,
+pull/up — в `docker ps` будет `ghcr.io/rsnest/botsecurity:1.0.4`.
 
 ```bash
 git clone https://github.com/RsNest/botsecurity.git
 cd botsecurity
 
 cp .env.example .env
-nano .env   # BOT_IMAGE_TAG=main (по умолчанию)
+nano .env
 
 cp credentials.json.example credentials.json
 # расшарить таблицы на client_email сервисного аккаунта
@@ -114,28 +122,12 @@ cp credentials.json.example credentials.json
 # один раз: логин в GHCR (PAT или gh auth token с read:packages)
 echo YOUR_GITHUB_TOKEN | sudo docker login ghcr.io -u RsNest --password-stdin
 
-sudo docker compose pull
-sudo docker compose up -d
+chmod +x deploy.sh
+./deploy.sh
 sudo docker compose logs -f
 ```
 
-### Релиз / новая версия
-
-1. При необходимости подними `VERSION` (например `1.0.3`) в коммите.
-2. Пуш в `main` → Actions сам соберёт `:main`, `:1.0.3`, `:1.0` и поставит git-тег `v1.0.3`.
-
-### Обновление бота на VDS
-
-После того как Actions зелёный (~1–3 мин):
-
-```bash
-cd /home/rudolf710/botsecurity
-./deploy.sh
-# или: git pull && docker compose pull && docker compose up -d
-```
-
-В `.env` должно быть `BOT_IMAGE_TAG=main` (или строки нет — compose возьмёт `main` сам).
-Проверка: `/version` — новый git sha / версия из `VERSION`.
+Проверка: `/version` в Telegram и `docker ps` — один и тот же semver.
 
 Локальная сборка на VDS больше не нужна (`build:` закомментирован в compose).
 
@@ -146,7 +138,7 @@ TELEGRAM_TOKEN=...           # от @BotFather
 ADMIN_IDS=145212489          # ваш Telegram user id
 BOT_UID=1000                 # Linux Docker-хост: вывод команды id -u
 BOT_GID=1000                 # Linux Docker-хост: вывод команды id -g
-BOT_IMAGE_TAG=main              # плавающий тег; или pin 1.0.2
+BOT_IMAGE_TAG=1.0.3             # выставляет ./deploy.sh из VERSION
 SPREADSHEET_ID=1l-FSeC1mfIXqX-bvoKdfRV5txF0TDQ5aD-8GD8Ey-sw
 SHEET_GID=684739217
 SPREADSHEET_MIRROR_ID=   # пусто = выкл; только native Google Sheet (не .xls)

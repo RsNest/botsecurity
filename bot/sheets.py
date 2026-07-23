@@ -36,6 +36,26 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive.readonly",
 ]
+MAX_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 2
+
+
+def _is_office_file_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return (
+        "must not be an office file" in msg
+        or "not supported for this document" in msg
+    )
+
+
+def _mirror_error_message(exc: BaseException) -> str:
+    if _is_office_file_error(exc):
+        return (
+            "зеркало — Excel/Office файл, Sheets API его не открывает. "
+            "В Google Drive: Файл → Сохранить как Google Таблицу "
+            "(или очистите SPREADSHEET_MIRROR_ID в .env)."
+        )
+    return str(exc)
 
 
 @dataclass(frozen=True)
@@ -118,10 +138,6 @@ def _entry_to_cells(entry: dict) -> list[str]:
     row[COL_UPLOADED_MF] = entry.get("uploaded_mf", "")
     row[COL_ACTUAL_RELEASE] = entry.get("actual_release_date", "")
     return row
-
-
-MAX_RETRIES = 3
-RETRY_BACKOFF_SECONDS = 2
 
 
 class SheetsClient:
@@ -262,8 +278,11 @@ class SheetsClient:
             worksheet = self._open_mirror()
             self._append_rows_to_worksheet(worksheet, values)
             logger.info("Mirror append OK (%s): %s row(s)", context, len(values))
-        except Exception:
-            logger.exception("Mirror append failed (%s)", context)
+        except Exception as exc:
+            if _is_office_file_error(exc):
+                logger.warning("Mirror append skipped (%s): %s", context, _mirror_error_message(exc))
+            else:
+                logger.exception("Mirror append failed (%s)", context)
 
     def _find_mirror_rows_by_tags(self, tags: list[str]) -> dict[str, int]:
         """Map normalized tag -> first matching mirror row number."""
@@ -334,8 +353,11 @@ class SheetsClient:
                     continue
                 tag_updates.append((tag, status, check_date))
             self._mirror_update_statuses_by_tag(tag_updates)
-        except Exception:
-            logger.exception("Mirror status update failed")
+        except Exception as exc:
+            if _is_office_file_error(exc):
+                logger.warning("Mirror status update skipped: %s", _mirror_error_message(exc))
+            else:
+                logger.exception("Mirror status update failed")
 
     def _mirror_update_statuses_by_tag(
         self,
@@ -535,8 +557,12 @@ class SheetsClient:
                 mirror_enabled=True,
             )
         except Exception as exc:
-            logger.exception("Reconcile mirror failed")
-            return ReconcileResult(mirror_enabled=True, error=str(exc))
+            friendly = _mirror_error_message(exc)
+            if _is_office_file_error(exc):
+                logger.warning("Reconcile mirror skipped: %s", friendly)
+            else:
+                logger.exception("Reconcile mirror failed")
+            return ReconcileResult(mirror_enabled=True, error=friendly)
 
     def _parse_rows(self, values: list[list[str]]) -> list[ImageRow]:
         result: list[ImageRow] = []

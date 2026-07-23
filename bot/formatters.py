@@ -306,15 +306,18 @@ def format_report_preview(matches, can_write: bool) -> str:
     # Keep overview short: show failed first, then a compact passed summary.
     if failed:
         parts.append("<b>Не прошли проверку:</b>")
-        show = failed[:40]
+        # Long harbor refs + Telegram 4096 limit — keep the list short;
+        # full browse is available via the «Непрошедшие» button.
+        show = failed[:12]
         parts.extend(line(m) for m in show)
         if len(failed) > len(show):
-            parts.append(f"… и ещё {len(failed) - len(show)}")
+            parts.append(
+                f"… и ещё {len(failed) - len(show)} "
+                "(откройте «Непрошедшие» для полного списка)"
+            )
         parts.append("")
     if passed:
         parts.append(f"<b>Прошли проверку:</b> {len(passed)}")
-        if len(passed) <= 15:
-            parts.extend(line(m) for m in passed)
         parts.append("")
     if unmatched:
         parts.append(

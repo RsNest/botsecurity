@@ -10,7 +10,7 @@
 - Публичные команды и **кнопки** (нижнее меню + inline)
 - Выборка по датам: прошли / не прошли проверку
 - **Отчёты ИБ**: пришлите архив сканирования (.7z/.zip) — бот определит вердикты и проставит статусы в таблице
-- Зеркалирование старого xls-реестра: `/add` и статусы пишутся в обе таблицы; `/sync` и hourly poll дописывают недостающие теги
+- Зеркалирование второго native Google Sheet (не загруженный .xls): `/add` и статусы пишутся в обе таблицы; `/sync` дописывает недостающие теги
 - Админ-команды для управления
 - Роли ИБ, история строк, CSV-экспорт, SLA-напоминания и настройки уведомлений
 
@@ -153,7 +153,7 @@ BOT_GID=1000                 # Linux Docker-хост: вывод команды 
 BOT_IMAGE_TAG=1.0.0          # pinned GHCR tag (semver)
 SPREADSHEET_ID=1l-FSeC1mfIXqX-bvoKdfRV5txF0TDQ5aD-8GD8Ey-sw
 SHEET_GID=684739217
-SPREADSHEET_MIRROR_ID=1nRDstaHXnZ2Jf9IvgsAAvM8anro9JpjB   # старый xls; пусто = выкл
+SPREADSHEET_MIRROR_ID=   # пусто = выкл; только native Google Sheet (не .xls)
 SHEET_MIRROR_GID=684739217
 GOOGLE_CREDENTIALS_PATH=credentials.json
 POLL_INTERVAL_MINUTES=60

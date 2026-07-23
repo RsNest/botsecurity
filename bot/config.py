@@ -66,7 +66,7 @@ class Settings:
             ),
             sheet_gid=sheet_gid,
             spreadsheet_mirror_id=os.getenv(
-                "SPREADSHEET_MIRROR_ID", "1nRDstaHXnZ2Jf9IvgsAAvM8anro9JpjB"
+                "SPREADSHEET_MIRROR_ID", ""
             ).strip(),
             sheet_mirror_gid=os.getenv("SHEET_MIRROR_GID", sheet_gid).strip() or sheet_gid,
             google_credentials_path=creds_path,

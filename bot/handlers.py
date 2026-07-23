@@ -75,6 +75,7 @@ from bot.keyboards import (
 )
 from bot.models import ImageRow
 from bot.monitor import RegistryMonitor
+from bot.report_export import build_failed_images_report
 from bot.reports import (
     MAX_ARCHIVE_SIZE,
     ReportMatch,
@@ -987,6 +988,30 @@ def setup_handlers(
                     callback.message,
                     format_report_image_detail(matches[idx], idx, len(matches)),
                     reply_markup=inline_report_detail(token, idx, mode=mode),
+                )
+            return
+
+        if action == "file":
+            failed = [m for m in matches if not m.report.passed]
+            if not failed:
+                await callback.answer("Нет непрошедших образов", show_alert=True)
+                return
+            await callback.answer("Собираю отчёт…")
+            try:
+                filename, payload = await asyncio.to_thread(
+                    build_failed_images_report, matches
+                )
+            except Exception:
+                logger.exception("Failed to build failed-images report")
+                await callback.answer("Не удалось собрать отчёт", show_alert=True)
+                return
+            if callback.message:
+                await callback.message.answer_document(
+                    BufferedInputFile(payload, filename=filename),
+                    caption=(
+                        f"📄 Непрошедшие: {len(failed)} из {len(matches)}. "
+                        "По каждому образу — Critical/High findings."
+                    ),
                 )
             return
 

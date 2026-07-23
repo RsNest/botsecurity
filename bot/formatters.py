@@ -342,8 +342,8 @@ def format_report_preview(matches, can_write: bool) -> str:
         )
     else:
         parts.append(
-            "Можно открыть детали по образам или записать результаты в таблицу "
-            f"(обновить {applicable}, добавить {len(unmatched)})."
+            "Можно открыть детали, скачать «📄 Отчёт по непрошедшим» "
+            f"или записать в таблицу (обновить {applicable}, добавить {len(unmatched)})."
         )
     return "\n".join(parts)
 

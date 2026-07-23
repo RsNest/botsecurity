@@ -236,6 +236,14 @@ def inline_report_menu(
                 )
             ]
         )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="📄 Отчёт по непрошедшим",
+                    callback_data=f"rep:file:{token}",
+                )
+            ]
+        )
     rows.append(
         [
             InlineKeyboardButton(

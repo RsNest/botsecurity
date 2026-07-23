@@ -34,8 +34,8 @@ MAX_ARCHIVE_FILES = 500
 MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 MAX_REPORT_FILE_BYTES = 2 * 1024 * 1024
 MAX_JSON_BYTES = MAX_REPORT_FILE_BYTES  # alias for tests / callers
-# Cap stored findings so huge images (thousands of CVEs) stay Telegram-friendly.
-MAX_FINDINGS_PER_REPORT = 80
+# Cap stored Critical/High findings (export + detail views).
+MAX_FINDINGS_PER_REPORT = 3000
 
 _VERSION_RE = re.compile(r"(\d+(?:\.\d+)+)")
 # Tokens that carry no identity (registry paths, common noise prefixes)
